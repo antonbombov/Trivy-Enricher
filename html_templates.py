@@ -214,6 +214,7 @@ def get_css_styles():
     .priority-B { background: #fef3c7; color: #92400e; }
     .priority-C { background: #dbeafe; color: #1e40af; }
     .priority-D { background: #dcfce7; color: #065f46; }
+    .priority-Not\\ scanned { background: #f3f4f6; color: #4b5563; }  /* ← НОВЫЙ СТИЛЬ */
 
     /* Status color chips */
     .bg-blue-100 { background-color: #dbeafe; }
@@ -420,12 +421,13 @@ def get_javascript():
       }
     })();
 
-    // Filters: search, priority, severity, epss, cisa, exploits, status
+    // Filters: search, priority, severity, epss, cisa, exploits, status, not scanned
     document.addEventListener('DOMContentLoaded', function() {
       const input = document.getElementById('searchInput');
       const epssInput = document.getElementById('filterEPSS');
       const cisaCheckbox = document.getElementById('filterCISA');
       const exploitCheckbox = document.getElementById('filterExploit');
+      const notScannedCheckbox = document.getElementById('filterNotScanned');
       const resetBtn = document.getElementById('resetFilters');
       const visibleCounter = document.getElementById('visibleCounter');
       const visibleCount = document.getElementById('visibleCount');
@@ -449,6 +451,7 @@ def get_javascript():
           (epssInput && epssInput.value !== '') ||
           (cisaCheckbox && cisaCheckbox.checked) ||
           (exploitCheckbox && exploitCheckbox.checked) ||
+          (notScannedCheckbox && notScannedCheckbox.checked) ||
           selectedPrios.size > 0 ||
           selectedSeverities.size > 0 ||
           selectedStatuses.size > 0;
@@ -511,6 +514,7 @@ def get_javascript():
       if (epssInput) epssInput.addEventListener('input', applyFilters);
       if (cisaCheckbox) cisaCheckbox.addEventListener('change', applyFilters);
       if (exploitCheckbox) exploitCheckbox.addEventListener('change', applyFilters);
+      if (notScannedCheckbox) notScannedCheckbox.addEventListener('change', applyFilters);
 
       // Reset filters
       if (resetBtn) {
@@ -519,6 +523,7 @@ def get_javascript():
           if (epssInput) epssInput.value = '';
           if (cisaCheckbox) cisaCheckbox.checked = false;
           if (exploitCheckbox) exploitCheckbox.checked = false;
+          if (notScannedCheckbox) notScannedCheckbox.checked = false;
 
           selectedPrios.clear();
           document.querySelectorAll('.prio').forEach(function(btn) {
@@ -544,6 +549,7 @@ def get_javascript():
         const epssMin = epssInput ? parseFloat(epssInput.value) / 100 || 0 : 0;
         const showCISA = cisaCheckbox && cisaCheckbox.checked;
         const showExploits = exploitCheckbox && exploitCheckbox.checked;
+        const showNotScanned = notScannedCheckbox && notScannedCheckbox.checked;
 
         let visibleCards = 0;
 
@@ -557,6 +563,7 @@ def get_javascript():
           const cardCisa = card.getAttribute('data-cisa') === 'true';
           const cardExpl = card.getAttribute('data-expl') === 'true';
           const cardStatus = card.getAttribute('data-status') || '';
+          const cardScanned = card.getAttribute('data-scanned') === 'true';
 
           let visible = true;
 
@@ -592,6 +599,11 @@ def get_javascript():
 
           // Exploit filter
           if (visible && showExploits && !cardExpl) {
+            visible = false;
+          }
+
+          // Not scanned filter - ПОКАЗЫВАТЬ ТОЛЬКО НЕ ОТСКАНИРОВАННЫЕ
+          if (visible && showNotScanned && cardScanned) {
             visible = false;
           }
 
@@ -729,13 +741,13 @@ def get_javascript():
         }
       }
     });
-    
-        // Scroll to top button
+
+    // Scroll to top button
     document.addEventListener('DOMContentLoaded', function() {
       const scrollToTopBtn = document.getElementById('scrollToTop');
-      
+
       if (!scrollToTopBtn) return;
-      
+
       // Показываем/скрываем кнопку при прокрутке
       window.addEventListener('scroll', function() {
         if (window.pageYOffset > 300) {
@@ -746,7 +758,7 @@ def get_javascript():
           scrollToTopBtn.classList.add('opacity-0', 'translate-y-4');
         }
       });
-      
+
       // Плавная прокрутка наверх
       scrollToTopBtn.addEventListener('click', function() {
         window.scrollTo({

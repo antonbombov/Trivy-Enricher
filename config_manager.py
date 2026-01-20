@@ -15,15 +15,28 @@ def load_config():
         "cache_directory": "SploitScanJsons",
         "output_directory": "Results",
         "cache_max_days": 30,
-        "max_workers": None,
+        "max_workers": None,  # None = автоопределение
         "timeout": 60,
-        "project_version": "1.0.0"  # <-- ДОБАВЛЕНО
+        "project_version": "1.0.0"
     }
 
     if config_path.exists():
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
                 user_config = json.load(f)
+
+                # Особенная обработка для max_workers
+                if "max_workers" in user_config:
+                    # Если пустая строка или null - оставляем None
+                    if user_config["max_workers"] in ["", None]:
+                        user_config["max_workers"] = None
+                    # Иначе пытаемся конвертировать в int
+                    else:
+                        try:
+                            user_config["max_workers"] = int(user_config["max_workers"])
+                        except (ValueError, TypeError):
+                            user_config["max_workers"] = None
+
                 default_config.update(user_config)
         except Exception as e:
             print(f"ОШИБКА загрузки config.json: {e}")

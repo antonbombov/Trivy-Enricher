@@ -554,6 +554,7 @@ def generate_sidebar(grouped_vulnerabilities):
                 <button data-prio="B" class="prio chip priority-B">B</button>
                 <button data-prio="C" class="prio chip priority-C">C</button>
                 <button data-prio="D" class="prio chip priority-D">D</button>
+                <button data-prio="Not scanned" class="prio chip priority-Not scanned">Not scanned</button>
               </div>
             </div>
 
@@ -595,6 +596,11 @@ def generate_sidebar(grouped_vulnerabilities):
                 <button data-status="under_investigation" class="status chip bg-amber-100 text-amber-700 dark:bg-amber-800/40 dark:text-amber-100">Under investigation</button>
                 <button data-status="unknown" class="status chip bg-yellow-100 text-yellow-700 dark:bg-yellow-800/40 dark:text-yellow-100">Unknown</button>
               </div>
+            </div>
+
+            <div class="flex items-center gap-2">
+              <input id="filterNotScanned" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-brand-600 focus:ring-brand-600 dark:border-gray-600" />
+              <label for="filterNotScanned" class="text-sm">Not scanned by SploitScan</label>
             </div>
 
             <div class="flex items-center gap-2">
@@ -782,6 +788,9 @@ def generate_vulnerability_card(vuln):
         metasploit_modules = exploit_data_dict['metasploit_modules']
         other_exploits = exploit_data_dict['other_exploits']
 
+    # Определяем, был ли CVE отсканирован SploitScan
+    is_scanned = (priority != 'Not scanned' and epss_score != 'Not scanned')
+
     return f"""
     <div class="vulnerability-card border rounded-lg p-4 hover:shadow-md transition-shadow mb-4" 
          data-cve="{cve_id}" 
@@ -791,7 +800,8 @@ def generate_vulnerability_card(vuln):
          data-epss="{epss_score if epss_score != 'Not scanned' else '0'}"
          data-cisa="{str(is_cisa_listed).lower()}" 
          data-expl="{str(has_any_exploits(sploitscan)).lower()}"
-         data-status="{status.lower()}">
+         data-status="{status.lower()}"
+         data-scanned="{str(is_scanned).lower()}">
 
       <!-- Заголовок карточки -->
       <div class="flex justify-between items-start mb-3">

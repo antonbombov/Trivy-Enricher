@@ -19,6 +19,7 @@ def enrich_trivy_report(trivy_report_path, output_dir=None):
     # Загружаем конфиг из config.json
     config = load_config()
     cache_dir = Path(config.get("cache_directory"))
+    max_workers_config = config.get("max_workers")
 
     # Если путь не передан — используем значение из config
     if output_dir is None:
@@ -38,8 +39,8 @@ def enrich_trivy_report(trivy_report_path, output_dir=None):
         cve_list = extract_cves_from_trivy(trivy_report_path)
         total_cves = len(cve_list)
 
-        # АВТОМАТИЧЕСКИЙ РАСЧЕТ WORKERS
-        max_workers = calculate_optimal_workers(total_cves)
+        # АВТОМАТИЧЕСКИЙ РАСЧЕТ WORKERS С УЧЕТОМ КОНФИГА
+        max_workers = calculate_optimal_workers(total_cves, max_workers_config)
 
         # ПРОВЕРЯЕМ КЭШ ПЕРЕД ОБРАБОТКОЙ
         cached_cves = []
@@ -54,9 +55,10 @@ def enrich_trivy_report(trivy_report_path, output_dir=None):
         print(f"  [CACHE] В кэше: {len(cached_cves)} CVE")
         print(f"  [SCAN]  Требуют сканирования: {len(uncached_cves)} CVE")
         print(f"Кэш sploitscan: {cache_dir}")
-        print(f"Результаты сохраняются в: {output_dir}")  # Информация о output директории
+        print(f"Результаты сохраняются в: {output_dir}")
         print(f"Параллельных workers: {max_workers}")
         print(f"Процессоров в системе: {os.cpu_count()}")
+        print(f"Макс. workers из конфига: {max_workers_config}")
         print("=" * 60)
 
         # ПАРАЛЛЕЛЬНАЯ ОБРАБОТКА С КЭШИРОВАНИЕМ
