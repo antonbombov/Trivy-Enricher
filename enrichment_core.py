@@ -1,7 +1,6 @@
 # enrichment_core.py
 import json
 import os
-import shutil
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from config_manager import load_config
@@ -11,7 +10,7 @@ from sploitscan_parser import parse_sploitscan_data
 from parallel_processor import process_single_cve, calculate_optimal_workers
 
 
-def enrich_trivy_report(trivy_report_path, output_dir=None):
+def enrich_trivy_report(trivy_report_path, output_dir):
     """
     Обогащает отчет Trivy с параллельной обработкой и кэшированием
     output_dir — путь к папке для сохранения итоговых отчетов
@@ -20,12 +19,7 @@ def enrich_trivy_report(trivy_report_path, output_dir=None):
     config = load_config()
     cache_dir = Path(config.get("cache_directory"))
     max_workers_config = config.get("max_workers")
-
-    # Если путь не передан — используем значение из config
-    if output_dir is None:
-        output_dir = Path(config.get("output_directory", "Results"))
-    else:
-        output_dir = Path(output_dir)
+    output_dir = Path(output_dir)
 
     # Создаем output директорию, если её нет
     output_dir.mkdir(parents=True, exist_ok=True)

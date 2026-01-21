@@ -1,6 +1,5 @@
 # trivy_parser.py
 import json
-from pathlib import Path
 
 def extract_cves_from_trivy(trivy_report_path):
     """
