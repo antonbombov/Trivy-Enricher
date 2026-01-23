@@ -1,0 +1,33 @@
+# PyCharm
+.idea/
+*.iml
+*.iws
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.env
+.venv
+
+# Virtual Environment
+ENV/
+env.bak/
+venv.bak/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Script results
+results/
+reports/
+Filtredreports/
+cache
+docker/Cache
+docker/Reports
+docker/Scan

@@ -1,0 +1,10 @@
+{
+  "sploitscan_path": "c:\\work\\dist\\sploitscan\\SploitScan\\sploitscan.py",
+  "scan_directory": "d:\\Work\\scripts\\TVE\\reports",
+  "cache_directory": "d:\\Work\\scripts\\TVE\\cache",
+  "output_directory": "d:\\Work\\scripts\\TVE\\results",
+  "cache_max_days": 30,
+  "max_workers": null,
+  "timeout": 60,
+  "project_version": "0.4.0"
+}
