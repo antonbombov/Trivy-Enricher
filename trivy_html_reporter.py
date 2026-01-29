@@ -665,53 +665,71 @@ def generate_vulnerabilities_content(grouped_vulnerabilities):
 
 
 def generate_package_section(section_name, pkg_name, vulnerabilities):
-    """Генерирует секцию для одного пакета"""
-    # Создаем уникальный ID для пакета
+    """Обновленная версия с дедупликацией"""
+    # ДЕДУПЛИКАЦИЯ: группируем уязвимости
+    grouped_vulns = group_vulnerabilities_by_unique_key(vulnerabilities)
+
+    # Генерируем ID для секции
     section_id = section_name.replace(' ', '_').replace('(', '').replace(')', '').replace('/', '_')
     pkg_safe = pkg_name.replace(' ', '_').replace('(', '').replace(')', '').replace('/', '_')
     pkg_id = f"{section_id}__{pkg_safe}"
 
-    # ДОПОЛНИТЕЛЬНАЯ СОРТИРОВКА: Сортируем уязвимости внутри пакета
-    vulnerabilities_sorted = sorted(
-        vulnerabilities,
-        key=lambda x: get_severity_weight(x.get('Severity', 'UNKNOWN')),
-        reverse=True  # По убыванию критичности
+    # СОРТИРОВКА: по severity
+    sorted_vulns = sorted(
+        grouped_vulns.values(),
+        key=lambda x: get_severity_weight(x['vulnerability'].get('Severity', 'UNKNOWN')),
+        reverse=True
     )
 
+    # Генерируем контент
     package_content = f"""
     <div id="{pkg_id}" class="mb-6 last:mb-0">
-      <h3 class="font-semibold text-md mb-3 border-b pb-2">{pkg_name}</h3>
-      <div class="space-y-3">
+        <h3 class="font-semibold text-md mb-3 border-b pb-2">
+            {pkg_name} 
+            <span class="text-sm font-normal muted">
+                ({len(sorted_vulns)} unique vulnerabilities, {sum(v['count'] for v in sorted_vulns)} total occurrences)
+            </span>
+        </h3>
+        <div class="space-y-3">
     """
 
-    for vuln in vulnerabilities_sorted:
-        package_content += generate_vulnerability_card(vuln)
+    for vuln_data in sorted_vulns:
+        package_content += generate_vulnerability_card(vuln_data)
 
     package_content += """
-      </div>
+        </div>
     </div>
     """
+
     return package_content
 
 
-def generate_vulnerability_card(vuln):
-    """Генерирует детальную карточку для одной уязвимости"""
-    cve_id = vuln.get('VulnerabilityID', 'Unknown')
-    severity = vuln.get('Severity', 'UNKNOWN')
-    description = vuln.get('Description', 'No description available')
+def generate_vulnerability_card(vuln_data):
+    """
+    Генерирует карточку сгруппированной уязвимости
+    vuln_data: словарь с данными группировки из group_vulnerabilities_by_unique_key
+    """
+    base_vuln = vuln_data['vulnerability']
+    cve_id = base_vuln.get('VulnerabilityID', 'Unknown')
+    severity = base_vuln.get('Severity', 'UNKNOWN')
+    description = base_vuln.get('Description', 'No description available')
     # Экранируем описание
     description = description.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"',
                                                                                                       '&quot;').replace(
         "'", '&#39;')
 
-    pkg_name = vuln.get('PkgName', 'Unknown Package')
-    installed_version = vuln.get('InstalledVersion', 'Unknown')
-    fixed_version = vuln.get('FixedVersion', 'Not fixed')
-    status = vuln.get('Status', 'Unknown')
-    references = vuln.get('References', [])
+    pkg_name = base_vuln.get('PkgName', 'Unknown Package')
+    installed_version = base_vuln.get('InstalledVersion', 'Unknown')
 
-    # CVSS данные (ИСПРАВЛЕННАЯ ЛОГИКА)
-    cvss_score, cvss_vector = get_cvss_data(vuln)
+    # Берем первый статус и фикс (для совместимости)
+    status = list(vuln_data['statuses'])[0] if vuln_data['statuses'] else base_vuln.get('Status', 'Unknown')
+    fixed_version = list(vuln_data['fixed_versions'])[0] if vuln_data['fixed_versions'] else base_vuln.get(
+        'FixedVersion', 'Not fixed')
+
+    references = base_vuln.get('References', [])
+
+    # CVSS данные
+    cvss_score, cvss_vector = get_cvss_data(base_vuln)
 
     # Определяем цвет для CVSS
     cvss_color = 'gray'
@@ -730,7 +748,7 @@ def generate_vulnerability_card(vuln):
             cvss_color = 'gray'
 
     # Данные из SploitScan
-    sploitscan = vuln.get('sploitscan', {})
+    sploitscan = base_vuln.get('sploitscan', {})
 
     # ОБРАБОТКА ОШИБОК SPLOITSCAN
     if isinstance(sploitscan, list) and len(sploitscan) == 0:
@@ -791,22 +809,31 @@ def generate_vulnerability_card(vuln):
     # Определяем, был ли CVE отсканирован SploitScan
     is_scanned = (priority != 'Not scanned' and epss_score != 'Not scanned')
 
-    return f"""
+    # Формируем данные для фильтрации
+    filter_data = f"""
+    data-cve="{cve_id}" 
+    data-package="{pkg_name}" 
+    data-prio="{priority}" 
+    data-severity="{severity}"
+    data-epss="{epss_score if epss_score != 'Not scanned' else '0'}"
+    data-cisa="{str(is_cisa_listed).lower()}" 
+    data-expl="{str(has_any_exploits(sploitscan)).lower()}"
+    data-status="{status.lower()}"
+    data-scanned="{str(is_scanned).lower()}"
+    data-count="{vuln_data['count']}"
+    """
+
+    # Начинаем формировать карточку
+    card_html = f"""
     <div class="vulnerability-card border rounded-lg p-4 hover:shadow-md transition-shadow mb-4" 
-         data-cve="{cve_id}" 
-         data-package="{pkg_name}" 
-         data-prio="{priority}" 
-         data-severity="{severity}"
-         data-epss="{epss_score if epss_score != 'Not scanned' else '0'}"
-         data-cisa="{str(is_cisa_listed).lower()}" 
-         data-expl="{str(has_any_exploits(sploitscan)).lower()}"
-         data-status="{status.lower()}"
-         data-scanned="{str(is_scanned).lower()}">
+         {filter_data}>
 
       <!-- Заголовок карточки -->
       <div class="flex justify-between items-start mb-3">
         <div class="flex items-center gap-2 flex-wrap">
           <h4 class="font-medium text-lg">{cve_id}</h4>
+          <!-- Бейдж количества вхождений -->
+          {f'<span class="badge bg-blue-100 text-blue-700 dark:bg-blue-800/40 dark:text-blue-100 px-2 py-0.5">{vuln_data["count"]}×</span>' if vuln_data['count'] > 1 else ''}
           <span class="badge bg-{cvss_color}-100 text-{cvss_color}-700 dark:bg-{cvss_color}-800/40 dark:text-{cvss_color}-100">CVSS: {cvss_score}</span>
           {f'<span class="badge bg-red-100 text-red-700 dark:bg-red-800/40 dark:text-red-100">{severity}</span>' if severity == 'CRITICAL' else ''}
           {f'<span class="badge bg-orange-100 text-orange-700 dark:bg-orange-800/40 dark:text-orange-100">{severity}</span>' if severity == 'HIGH' else ''}
@@ -818,6 +845,26 @@ def generate_vulnerability_card(vuln):
         <div class="text-right text-sm">
           <div class="muted">EPSS: {format_epss(epss_score)}</div>
           <div class="muted">Status: {status}</div>
+        </div>
+      </div>
+    """
+
+    # Для УНИКАЛЬНЫХ уязвимостей (count = 1) - показываем Location и Source file в начале
+    if vuln_data['count'] == 1 and vuln_data['paths']:
+        single_path = next(iter(vuln_data['paths']))
+        source_jar = extract_root_jar(single_path) if single_path else 'N/A'
+
+        card_html += f"""
+      <!-- Локация для уникальной уязвимости -->
+      <div class="mb-3">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+          <div>
+            <span class="font-medium">Location:</span> 
+            <span class="text-xs font-mono break-all">{single_path[:80]}{'...' if len(single_path) > 80 else ''}</span>
+          </div>
+          <div>
+            <span class="font-medium">Source file:</span> {source_jar}
+          </div>
         </div>
       </div>
 
@@ -839,15 +886,130 @@ def generate_vulnerability_card(vuln):
           </div>
         </div>
       </div>
+        """
+    else:
+        # Для МНОЖЕСТВЕННЫХ уязвимостей (count > 1) - оставляем красивый блок
+        if vuln_data['count'] > 1:
+            # Генерируем список уникальных путей
+            paths_list_html = ""
+            sorted_paths = sorted(vuln_data['paths'])
 
+            # Показываем ВСЕ пути
+            for path in sorted_paths:
+                # Укорачиваем очень длинные пути для лучшего отображения
+                display_path = path
+                if len(path) > 120:
+                    # Оставляем начало и конец пути
+                    display_path = path[:60] + "..." + path[-60:]
+
+                paths_list_html += f'''
+                <li class="text-xs py-1 px-2 hover:bg-gray-50 dark:hover:bg-gray-800 rounded border border-gray-100 dark:border-gray-700 mb-1"
+                    title="{path}">
+                    <div class="flex items-center">
+                        <svg class="w-3 h-3 mr-2 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                        </svg>
+                        <span class="truncate">{display_path}</span>
+                    </div>
+                </li>'''
+
+            # Красивый блок для множественных уязвимостей
+            card_html += f"""
+      <!-- Базовая информация -->
+      <div class="mb-3">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+          <div>
+            <span class="font-medium">Package:</span> {pkg_name}
+          </div>
+          <div>
+            <span class="font-medium">Version:</span> {installed_version}
+          </div>
+          <div>
+            <span class="font-medium">Fixed in:</span> {fixed_version}
+          </div>
+          <div>
+            <span class="font-medium">CISA KEV:</span> 
+            {f'<span class="badge bg-green-100 text-green-700 dark:bg-green-800/40 dark:text-green-100">{cisa_status}</span>' if is_cisa_listed else f'<span class="badge bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200">{cisa_status}</span>'}
+          </div>
+        </div>
+      </div>
+
+      <!-- Красивый блок для множественных вхождений -->
+      <div class="mt-3 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-100 dark:border-blue-800">
+        <div class="flex justify-between items-center mb-3">
+          <div class="font-medium text-sm flex items-center">
+            <svg class="w-4 h-4 mr-2 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+            </svg>
+            Found in {vuln_data['count']} locations
+          </div>
+        </div>
+
+        <div class="text-xs text-gray-600 dark:text-gray-400 mb-3">
+          ({len(vuln_data['paths'])} unique paths)
+        </div>
+
+        <!-- Детальная информация о путях -->
+        <details class="mt-1">
+          <summary class="cursor-pointer text-sm text-brand-600 hover:text-brand-700 dark:text-brand-400 dark:hover:text-brand-300 font-medium flex items-center">
+            <svg class="w-4 h-4 mr-1 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+            </svg>
+            Show all paths ({len(sorted_paths)})
+          </summary>
+          <div class="mt-3 max-h-96 overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-lg p-2 bg-white/50 dark:bg-gray-800/30">
+            <ul class="space-y-1">
+              {paths_list_html}
+            </ul>
+
+            <!-- Статистика внизу списка -->
+            <div class="mt-3 pt-2 border-t border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400">
+              <div class="flex justify-between">
+                <span>Total occurrences: <strong>{vuln_data['count']}</strong></span>
+                <span>Unique paths: <strong>{len(sorted_paths)}</strong></span>
+              </div>
+            </div>
+          </div>
+        </details>
+      </div>
+            """
+        else:
+            # Если count = 1 но нет paths (маловероятно)
+            card_html += f"""
+      <!-- Базовая информация -->
+      <div class="mb-3">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+          <div>
+            <span class="font-medium">Package:</span> {pkg_name}
+          </div>
+          <div>
+            <span class="font-medium">Version:</span> {installed_version}
+          </div>
+          <div>
+            <span class="font-medium">Fixed in:</span> {fixed_version}
+          </div>
+          <div>
+            <span class="font-medium">CISA KEV:</span> 
+            {f'<span class="badge bg-green-100 text-green-700 dark:bg-green-800/40 dark:text-green-100">{cisa_status}</span>' if is_cisa_listed else f'<span class="badge bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200">{cisa_status}</span>'}
+          </div>
+        </div>
+      </div>
+            """
+
+    # Завершаем карточку (общая часть)
+    card_html += f"""
       <!-- Описание -->
       <div class="mb-3">
+        <div class="font-medium text-sm mb-1">Description:</div>
         <p class="text-sm">{description}</p>
       </div>
 
       <!-- Детальная информация (раскрывающаяся) -->
       <details class="mt-3">
-        <summary class="cursor-pointer font-medium text-sm text-brand-600 hover:text-brand-700">
+        <summary class="cursor-pointer font-medium text-sm text-brand-600 hover:text-brand-700 dark:text-brand-400 dark:hover:text-brand-300 flex items-center">
+          <svg class="w-4 h-4 mr-1 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+          </svg>
           Show detailed information
         </summary>
 
@@ -856,7 +1018,7 @@ def generate_vulnerability_card(vuln):
           <div class="pb-4 border-b border-gray-200 dark:border-gray-700">
             <h5 class="font-medium mb-2">CVSS Vector</h5>
             <div class="text-sm">
-              <code class="text-xs bg-gray-100 dark:bg-gray-800 p-2 rounded">{cvss_vector}</code>
+              <code class="text-xs bg-gray-100 dark:bg-gray-800 p-2 rounded break-all">{cvss_vector}</code>
             </div>
           </div>
 
@@ -888,6 +1050,8 @@ def generate_vulnerability_card(vuln):
       </details>
     </div>
     """
+
+    return card_html
 
 
 def get_exploit_data(sploitscan):
@@ -1076,6 +1240,93 @@ def get_scan_datetime(trivy_data):
 
     # Если не нашли, возвращаем текущую дату генерации отчета
     return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+
+def group_vulnerabilities_by_unique_key(vulnerabilities):
+    """
+    Группирует уязвимости, чтобы избежать дублей в отображении
+    Возвращает список сгруппированных уязвимостей
+    """
+    grouped = {}
+
+    for vuln in vulnerabilities:
+        # Основной ключ для группировки - уникальная уязвимость
+        # CVE + Пакет + Версия (PURL лучше всего)
+        purl = vuln.get('PkgIdentifier', {}).get('PURL', '')
+
+        if purl:
+            # Используем PURL как уникальный идентификатор пакета
+            # Формат: pkg:maven/ch.qos.logback/logback-classic@1.2.3
+            key = f"{vuln.get('VulnerabilityID')}::{purl}"
+        else:
+            # Fallback: CVE + PkgName + Version
+            key = (
+                vuln.get('VulnerabilityID'),
+                vuln.get('PkgName'),
+                vuln.get('InstalledVersion')
+            )
+            key = str(key)
+
+        # Добавляем в группу
+        if key not in grouped:
+            grouped[key] = {
+                'vulnerability': vuln.copy(),  # основная информация
+                'paths': set(),  # уникальные пути
+                'sources': set(),  # исходные файлы/артефакты
+                'count': 0,  # общее количество вхождений
+                'statuses': set(),  # уникальные статусы
+                'fixed_versions': set()  # уникальные фиксы
+            }
+
+        # Собираем дополнительные данные
+        data = grouped[key]
+
+        # Пути
+        pkg_path = vuln.get('PkgPath')
+        if pkg_path:
+            data['paths'].add(pkg_path)
+
+        # Источники (корневые JAR файлы)
+        source_jar = extract_root_jar(pkg_path)
+        if source_jar:
+            data['sources'].add(source_jar)
+
+        # Статусы и фиксы
+        status = vuln.get('Status')
+        if status:
+            data['statuses'].add(status)
+
+        fixed_version = vuln.get('FixedVersion')
+        if fixed_version and fixed_version != 'None':
+            data['fixed_versions'].add(fixed_version)
+
+        # Счетчик
+        data['count'] += 1
+
+    return grouped
+
+
+def extract_root_jar(pkg_path):
+    """
+    Извлекает корневой JAR файл из пути
+    Примеры:
+    - "app.jar" → "app.jar"
+    - "app.jar/BOOT-INF/lib/lib.jar" → "app.jar"
+    - "merged-all.jar" → "merged-all.jar"
+    """
+    if not pkg_path:
+        return None
+
+    # Разделяем по /
+    parts = pkg_path.split('/')
+
+    # Первый элемент - корневой JAR (если это .jar файл)
+    root = parts[0]
+    if root.endswith('.jar') or root.endswith('.war') or root.endswith('.ear'):
+        return root
+
+    return None
+
 
 def main():
     """
