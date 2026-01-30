@@ -431,7 +431,6 @@ def get_javascript():
       const resetBtn = document.getElementById('resetFilters');
       const visibleCounter = document.getElementById('visibleCounter');
       const visibleCount = document.getElementById('visibleCount');
-      const totalCount = document.getElementById('totalCount');
 
       if (!input) return;
 
@@ -440,10 +439,9 @@ def get_javascript():
       let selectedSeverities = new Set();
       let selectedStatuses = new Set();
 
-      // Update counter function
+      // Update counter function - ТОЛЬКО видимые карточки
       function updateVisibleCounter(visibleCards) {
         visibleCount.textContent = visibleCards;
-        totalCount.textContent = vulnerabilityCards.length;
 
         // Show/hide counter based on whether any filters are active
         const hasActiveFilters = 
@@ -618,7 +616,7 @@ def get_javascript():
         // Update package and section visibility
         updatePackageAndSectionVisibility();
 
-        // Update visible counter
+        // Update visible counter - ТОЛЬКО количество видимых карточек
         updateVisibleCounter(visibleCards);
       }
 

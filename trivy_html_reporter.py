@@ -377,7 +377,7 @@ def generate_main_content(stats, grouped_vulnerabilities):
 
         <!-- Counter for visible cards -->
         <div id="visibleCounter" class="mb-4 px-3 py-2 bg-brand-50 text-brand-700 dark:bg-brand-900/30 dark:text-brand-300 rounded-md text-sm font-medium hidden">
-          <span id="visibleCount">0</span> of <span id="totalCount">{stats['total_cves']}</span> vulnerabilities visible
+          <span id="visibleCount">0</span> vulnerability cards visible
         </div>
 
         <!-- Vulnerabilities by section -->
