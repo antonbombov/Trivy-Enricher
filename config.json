@@ -6,5 +6,5 @@
   "cache_max_days": 30,
   "max_workers": null,
   "timeout": 60,
-  "project_version": "0.4.0"
+  "project_version": "0.5.0"
 }
