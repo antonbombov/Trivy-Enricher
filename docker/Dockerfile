@@ -23,7 +23,7 @@ RUN echo '{ \
   "cache_max_days": 30, \
   "max_workers": null, \
   "timeout": 90, \
-  "project_version": "0.5.0" \
+  "project_version": "0.6.0" \
 }' > /app/config.json
 
 CMD ["python", "-u", "main.py"]

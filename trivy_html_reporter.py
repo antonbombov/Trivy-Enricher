@@ -40,7 +40,6 @@ def generate_trivy_html_report(enriched_trivy_path, output_dir=None):
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(html_content)
 
-        print(f"HTML отчет создан: {output_path}")
         return output_path
 
     except Exception as e:

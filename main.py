@@ -3,6 +3,7 @@ import time
 from pathlib import Path
 from enrichment_core import enrich_trivy_report
 from trivy_html_reporter import generate_trivy_html_report
+from trivy_excel_reporter import generate_trivy_excel_report
 from config_manager import load_config, setup_directories
 from cache_cleaner import cleanup_old_cache, get_cache_stats
 
@@ -36,7 +37,7 @@ def main():
     # Очищаем логи перед запуском
     print("=" * 60)
     print("ОБОГАЩЕНИЕ TRIVY SPLOITSCAN")
-    print("ПОЛНАЯ ИНФОРМАЦИЯ ОБ ЭКСПЛОЙТАХ + HTML ОТЧЕТ")
+    print("ПОЛНАЯ ИНФОРМАЦИЯ ОБ ЭКСПЛОЙТАХ + HTML ОТЧЕТ + EXCEL ОТЧЕТ")
     print("=" * 60)
 
     # Показываем статистику кэша
@@ -54,7 +55,7 @@ def main():
 
     print(f"Ищем отчеты в: {scan_dir}")
     print(f"Кэш SploitScan: {cache_dir}")
-    print(f"Результаты (JSON+HTML+Логи): {output_dir}")
+    print(f"Результаты (JSON+HTML+Excel+Логи): {output_dir}")
     print(f"Логи SploitScan: {output_dir / 'logs'} (отдельный файл для каждого CVE и попытки)")
 
     # Ищем отчеты в указанной папке scan_dir
@@ -91,14 +92,26 @@ def main():
             print(f"\nГенерация HTML отчета...")
             html_start_time = time.time()
 
-            # Используем output_dir для сохранения HTML
             html_file = generate_trivy_html_report(enriched_file, output_dir)
             html_time = time.time() - html_start_time
 
             if html_file:
-                print(f"HTML отчет создан за {html_time:.1f}с: {html_file}")
+                print(f"HTML отчет создан за {html_time:.1f}с: {html_file}")  # ТОЛЬКО ЗДЕСЬ
             else:
                 print(f"Ошибка создания HTML отчета")
+
+            # ГЕНЕРАЦИЯ EXCEL ОТЧЕТА
+            print(f"\nГенерация Excel отчета...")
+            excel_start_time = time.time()
+
+            excel_file = generate_trivy_excel_report(enriched_file, output_dir)
+            excel_time = time.time() - excel_start_time
+
+            if excel_file:
+                print(f"Excel отчет создан за {excel_time:.1f}с: {excel_file}")  # ТОЛЬКО ЗДЕСЬ
+            else:
+                print(f"Ошибка создания Excel отчета")
+
         else:
             print(f"ОШИБКА")
 
