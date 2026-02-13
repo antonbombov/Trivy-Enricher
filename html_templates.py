@@ -1,7 +1,11 @@
 # html_templates.py
 
 def get_base_html():
-    """Возвращает базовую структуру HTML"""
+    """
+    Возвращает БАЗОВЫЙ шаблон HTML с маркером для Tailwind JS.
+    Никаких {tailwind_include} в этом шаблоне нет — только чистый HTML
+    с плейсхолдерами для .format().
+    """
     return """<!DOCTYPE html>
 <html lang="en" class="scroll-smooth">
 <head>
@@ -9,8 +13,8 @@ def get_base_html():
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{artifact_name}</title>
 
-  <!-- Tailwind (CDN runtime) -->
-  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- TAILWIND_JS_PLACEHOLDER -->
+
   <script>
     tailwind.config = {{
       darkMode: 'class',
@@ -81,7 +85,6 @@ def get_base_html():
   <script>
     {javascript}
   </script>
-    <!-- Scroll to top button -->
   <button id="scrollToTop" class="fixed bottom-6 right-6 p-3 rounded-full bg-brand-600 text-white shadow-lg hover:bg-brand-700 transition-all duration-200 opacity-0 transform translate-y-4 no-print" 
           aria-label="Scroll to top">
     <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">

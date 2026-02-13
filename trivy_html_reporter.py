@@ -4,9 +4,10 @@ from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
 from html_templates import get_base_html, get_css_styles, get_javascript
+from cdn_cache_manager import get_tailwind_js
 
 
-def generate_trivy_html_report(enriched_trivy_path, output_dir=None):
+def generate_trivy_html_report(enriched_trivy_path, output_dir, cache_dir):
     """
     Генерирует HTML отчет из обогащенного отчета Trivy в стиле SploitScan
     """
@@ -15,26 +16,35 @@ def generate_trivy_html_report(enriched_trivy_path, output_dir=None):
         with open(enriched_trivy_path, 'r', encoding='utf-8-sig') as f:
             trivy_data = json.load(f)
 
-        # Определяем путь для сохранения
+        # Валидация обязательных параметров
         if output_dir is None:
-            # Если не указан, пробуем получить из конфига
-            from config_manager import load_config
-            config = load_config()
-            output_dir = Path(config.get('output_directory', Path(__file__).parent))
-        else:
-            output_dir = Path(output_dir)
+            raise ValueError("output_dir обязателен для генерации HTML отчета")
+        if cache_dir is None:
+            raise ValueError("cache_dir обязателен для генерации HTML отчета")
+
+        output_dir = Path(output_dir)
+        cache_dir = Path(cache_dir)
+
+        # Получаем Tailwind JS (скачиваем или берем из кэша)
+        tailwind_js = get_tailwind_js(cache_dir)
 
         # Создаем директорию, если её нет
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Сохраняем в указанной директории
-        output_path = output_dir / f"{enriched_trivy_path.stem}_report.html"
+        # Формируем путь для сохранения
+        output_path = output_dir / f"{Path(enriched_trivy_path).stem}_report.html"
 
-        # Собираем статистику и данные
+        # Собираем статистику и группируем данные
         stats, grouped_vulnerabilities = collect_statistics_and_group_data(trivy_data)
 
-        # Генерируем HTML
-        html_content = generate_html_content(trivy_data, stats, grouped_vulnerabilities, enriched_trivy_path.name)
+        # Генерируем HTML с встроенным Tailwind JS
+        html_content = generate_html_content(
+            trivy_data,
+            stats,
+            grouped_vulnerabilities,
+            Path(enriched_trivy_path).name,
+            tailwind_js  # ИЗМЕНЕНО: передаем JS, а не CSS
+        )
 
         # Сохраняем файл
         with open(output_path, 'w', encoding='utf-8') as f:
@@ -325,9 +335,9 @@ def get_cvss_data(vuln):
     return 'N/A', 'N/A'
 
 
-def generate_html_content(trivy_data, stats, grouped_vulnerabilities, report_filename):
+def generate_html_content(trivy_data, stats, grouped_vulnerabilities, report_filename, tailwind_js):
     """
-    Генерирует полный HTML контент
+    Генерирует полный HTML контент с встроенным Tailwind JS
     """
     from config_manager import load_config
 
@@ -337,7 +347,12 @@ def generate_html_content(trivy_data, stats, grouped_vulnerabilities, report_fil
 
     main_content = generate_main_content(stats, grouped_vulnerabilities)
 
-    html = get_base_html().format(
+    # ШАГ 1: Получаем базовый шаблон
+    base_html = get_base_html()
+
+    # ШАГ 2: Сначала делаем .format() для всех переменных
+    # На этом этапе в HTML нет JS, только {плейсхолдеры}
+    html_with_placeholders = base_html.format(
         main_content=main_content,
         artifact_name=artifact_name,
         project_version=project_version,
@@ -347,7 +362,27 @@ def generate_html_content(trivy_data, stats, grouped_vulnerabilities, report_fil
         javascript=get_javascript()
     )
 
-    return html
+    # ШАГ 3: Вставляем Tailwind JS через простую замену строки
+    # Здесь уже нет .format(), фигурные скобки в JS безопасны
+    if tailwind_js:
+        tailwind_section = f'''
+        <!-- Tailwind CSS (локальный JS генератор, оффлайн режим) -->
+        <script>
+        {tailwind_js}
+        </script>
+        '''
+    else:
+        tailwind_section = '''
+        <!-- Tailwind CSS (CDN) -->
+        <script src="https://cdn.tailwindcss.com"></script>
+        '''
+
+    final_html = html_with_placeholders.replace(
+        '<!-- TAILWIND_JS_PLACEHOLDER -->',
+        tailwind_section
+    )
+
+    return final_html
 
 
 def generate_main_content(stats, grouped_vulnerabilities):
