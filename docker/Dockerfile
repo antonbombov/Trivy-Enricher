@@ -11,6 +11,9 @@ RUN git clone https://github.com/antonbombov/Trivy-Enricher /app
 # Устанавливаем зависимости SploitScan
 RUN pip install --no-cache-dir -r /sploitscan/requirements.txt
 
+# Устанавливаем зависимости основного проекта
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
 # Создаем директории для монтирования
 RUN mkdir -p /scan/input /scan/cache /scan/results
 
