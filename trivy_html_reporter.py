@@ -11,53 +11,45 @@ def generate_trivy_html_report(enriched_trivy_path, output_dir, cache_dir):
     """
     Генерирует HTML отчет из обогащенного отчета Trivy в стиле SploitScan
     """
-    try:
-        # Загружаем обогащенный отчет
-        with open(enriched_trivy_path, 'r', encoding='utf-8-sig') as f:
-            trivy_data = json.load(f)
+    # Загружаем обогащенный отчет
+    with open(enriched_trivy_path, 'r', encoding='utf-8-sig') as f:
+        trivy_data = json.load(f)
 
-        # Валидация обязательных параметров
-        if output_dir is None:
-            raise ValueError("output_dir обязателен для генерации HTML отчета")
-        if cache_dir is None:
-            raise ValueError("cache_dir обязателен для генерации HTML отчета")
+    # Валидация обязательных параметров
+    if output_dir is None:
+        raise ValueError("output_dir обязателен для генерации HTML отчета")
+    if cache_dir is None:
+        raise ValueError("cache_dir обязателен для генерации HTML отчета")
 
-        output_dir = Path(output_dir)
-        cache_dir = Path(cache_dir)
+    output_dir = Path(output_dir)
+    cache_dir = Path(cache_dir)
 
-        # Получаем Tailwind JS (скачиваем или берем из кэша)
-        tailwind_js = get_tailwind_js(cache_dir)
+    # Получаем Tailwind JS (может быть None - тогда будет CDN версия)
+    tailwind_js = get_tailwind_js(cache_dir)
 
-        # Создаем директорию, если её нет
-        output_dir.mkdir(parents=True, exist_ok=True)
+    # Создаем директорию, если её нет
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Формируем путь для сохранения
-        output_path = output_dir / f"{Path(enriched_trivy_path).stem}_report.html"
+    # Формируем путь для сохранения
+    output_path = output_dir / f"{Path(enriched_trivy_path).stem}_report.html"
 
-        # Собираем статистику и группируем данные
-        stats, grouped_vulnerabilities = collect_statistics_and_group_data(trivy_data)
+    # Собираем статистику и группируем данные
+    stats, grouped_vulnerabilities = collect_statistics_and_group_data(trivy_data)
 
-        # Генерируем HTML с встроенным Tailwind JS
-        html_content = generate_html_content(
-            trivy_data,
-            stats,
-            grouped_vulnerabilities,
-            Path(enriched_trivy_path).name,
-            tailwind_js  # ИЗМЕНЕНО: передаем JS, а не CSS
-        )
+    # Генерируем HTML (с Tailwind JS или CDN ссылкой)
+    html_content = generate_html_content(
+        trivy_data,
+        stats,
+        grouped_vulnerabilities,
+        Path(enriched_trivy_path).name,
+        tailwind_js  # может быть None - generate_html_content сам разберется
+    )
 
-        # Сохраняем файл
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write(html_content)
+    # Сохраняем файл
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(html_content)
 
-        return output_path
-
-    except Exception as e:
-        import traceback
-        print(f"ОШИБКА генерации HTML отчета: {e}")
-        print(f"Трассировка ошибки:")
-        traceback.print_exc()
-        return None
+    return output_path
 
 
 def collect_statistics_and_group_data(trivy_data):
