@@ -2,6 +2,7 @@
 import json
 import shutil
 from pathlib import Path
+from typing import Optional, Tuple
 
 
 def load_config():
@@ -94,3 +95,102 @@ def setup_directories(config):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     return scan_dir, cache_dir, output_dir
+
+
+def get_ptai_reports_path(config) -> Optional[Path]:
+    """
+    Возвращает путь к каталогу с PTAI отчетами
+
+    Args:
+        config: Словарь конфигурации
+
+    Returns:
+        Path к каталогу PTAI или None, если каталог не существует
+    """
+    scan_dir = Path(config['scan_directory'])
+    ptai_dir = scan_dir / "PTAI"
+
+    if ptai_dir.exists() and ptai_dir.is_dir():
+        return ptai_dir
+    else:
+        return None
+
+
+def find_ptai_report_for_trivy(trivy_file_path, config) -> Optional[Path]:
+    """
+    Ищет соответствующий PTAI отчет для Trivy отчета.
+    Требует точного совпадения имен файлов (без учета расширения).
+
+    Args:
+        trivy_file_path: Путь к Trivy отчету (Path или строка)
+        config: Словарь конфигурации
+
+    Returns:
+        Path к PTAI отчету или None, если отчет не найден или имена не совпадают
+    """
+    trivy_path = Path(trivy_file_path)
+    ptai_dir = get_ptai_reports_path(config)
+
+    if not ptai_dir:
+        print("   ⚠️ Каталог PTAI не найден")
+        return None
+
+    # Ищем все HTML файлы в каталоге PTAI
+    html_files = list(ptai_dir.glob("*.html"))
+    if not html_files:
+        print("   ⚠️ В каталоге PTAI нет HTML файлов")
+        return None
+
+    # Получаем базовое имя Trivy отчета (без _enriched и расширения)
+    base_name = trivy_path.stem
+    base_name = base_name.replace('_enriched', '')
+
+    # Ищем точное совпадение по имени (без учета расширения)
+    for html_file in html_files:
+        if html_file.stem == base_name:
+            print(f"   ✅ Найден соответствующий PTAI отчет: {html_file.name}")
+            return html_file
+
+    # Если точного совпадения нет, выводим сообщение и возвращаем None
+    print(f"   ⚠️ PTAI отчет не найден: требуется файл с именем '{base_name}.html'")
+    print(f"      Доступные PTAI отчеты: {[f.name for f in html_files]}")
+    return None
+
+
+def get_all_ptai_reports(config) -> list:
+    """
+    Возвращает список всех PTAI отчетов в каталоге
+
+    Args:
+        config: Словарь конфигурации
+
+    Returns:
+        Список Path объектов HTML файлов
+    """
+    ptai_dir = get_ptai_reports_path(config)
+    if ptai_dir:
+        return list(ptai_dir.glob("*.html"))
+    return []
+
+
+def main():
+    """
+    Функция для тестирования
+    """
+    config = load_config()
+    print("📋 Текущая конфигурация:")
+    for key, value in config.items():
+        print(f"   {key}: {value}")
+
+    ptai_dir = get_ptai_reports_path(config)
+    print(f"\n📁 PTAI каталог: {ptai_dir}")
+
+    if ptai_dir:
+        ptai_reports = get_all_ptai_reports(config)
+        print(f"📄 Найдено PTAI отчетов: {len(ptai_reports)}")
+        for report in ptai_reports:
+            print(f"   - {report.name}")
+
+
+if __name__ == "__main__":
+    main()
