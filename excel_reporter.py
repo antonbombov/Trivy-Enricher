@@ -112,9 +112,103 @@ def generate_excel_report(enriched_trivy_path, output_dir, ptai_html_path=None):
         return None
 
 
+def group_vulnerabilities_by_artifact(vulnerabilities):
+    """
+    Группирует уязвимости по уникальному артефакту (источник + путь + пакет + версия)
+    Объединяет все CVE, найденные для одного и того же артефакта
+    """
+    from collections import defaultdict
+
+    groups = defaultdict(lambda: {
+        'vulnerability_ids': set(),
+        'severities': [],
+        'severity_levels': [],
+        'remediation_dates': [],
+        'statuses': set(),
+        'comments': set(),
+        'source': None,
+        'path': None,
+        'package': None,
+        'version': None
+    })
+
+    severity_order = {'CRITICAL': 4, 'HIGH': 3, 'MEDIUM': 2, 'LOW': 1, 'UNKNOWN': 0}
+
+    for vuln in vulnerabilities:
+        # Ключ группировки: источник + путь + пакет + версия
+        key = (vuln['source'], vuln['path'], vuln['package'], vuln['version'])
+        group = groups[key]
+
+        # Сохраняем базовую информацию
+        group['source'] = vuln['source']
+        group['path'] = vuln['path']
+        group['package'] = vuln['package']
+        group['version'] = vuln['version']
+
+        # ID уязвимостей - используем set для уникальности
+        group['vulnerability_ids'].add(vuln['vulnerability_id'])
+
+        # Уровни критичности
+        severity = vuln['severity']
+        group['severities'].append(severity)
+        group['severity_levels'].append((severity_order.get(severity, 0), severity))
+
+        # Сроки устранения с их приоритетом
+        try:
+            rem_date = datetime.strptime(vuln['remediation_date'], '%d.%m.%Y')
+            group['remediation_dates'].append((severity_order.get(severity, 0), rem_date, vuln['remediation_date']))
+        except:
+            group['remediation_dates'].append((severity_order.get(severity, 0), None, vuln['remediation_date']))
+
+        # Статус и комментарий
+        if vuln.get('status'):
+            group['statuses'].add(vuln['status'])
+        if vuln.get('comment'):
+            group['comments'].add(vuln['comment'])
+
+    # Формируем результат
+    result = []
+    for key, group in groups.items():
+        # Объединяем идентификаторы уязвимостей (уникальные, сортированные)
+        vuln_ids_str = '\n'.join(sorted(group['vulnerability_ids']))
+
+        # Объединяем уровни критичности (уникальные, сортированные по важности)
+        unique_severities = []
+        seen = set()
+        for _, sev in sorted(group['severity_levels'], key=lambda x: x[0], reverse=True):
+            if sev not in seen:
+                seen.add(sev)
+                unique_severities.append(sev)
+        severity_str = '\n'.join(unique_severities)
+
+        # Выбираем срок устранения: берем дату для наивысшего уровня критичности
+        remediation_date = ''
+        if group['remediation_dates']:
+            sorted_dates = sorted(group['remediation_dates'], key=lambda x: x[0], reverse=True)
+            remediation_date = sorted_dates[0][2]
+
+        # Статус и комментарий
+        status_str = '\n'.join(sorted(group['statuses'])) if group['statuses'] else ''
+        comment_str = '\n'.join(sorted(group['comments'])) if group['comments'] else ''
+
+        result.append({
+            'source': group['source'],
+            'path': group['path'],
+            'package': group['package'],
+            'version': group['version'],
+            'vulnerability_id': vuln_ids_str,
+            'severity': severity_str,
+            'remediation_date': remediation_date,
+            'status': status_str,
+            'comment': comment_str
+        })
+
+    return result
+
+
 def add_sca_sheet(workbook, enriched_trivy_path):
     """
-    Добавляет лист с SCA анализом из Trivy
+    Добавляет лист с SCA анализом из Trivy с группировкой по уникальному пути
     """
     # Загружаем обогащенный отчет
     with open(enriched_trivy_path, 'r', encoding='utf-8-sig') as f:
@@ -125,6 +219,9 @@ def add_sca_sheet(workbook, enriched_trivy_path):
 
     # Собираем ВСЕ вхождения уязвимостей
     all_vulnerabilities = collect_all_vulnerabilities(trivy_data)
+
+    # Группируем по уникальному пути (источник + путь)
+    grouped_vulnerabilities = group_vulnerabilities_by_artifact(all_vulnerabilities)
 
     # Получаем имя артефакта и текущую дату
     artifact_name = get_artifact_name(Path(enriched_trivy_path).name)
@@ -142,8 +239,8 @@ def add_sca_sheet(workbook, enriched_trivy_path):
         cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
         cell.border = CELL_BORDER
 
-    # Заполняем данные
-    for row_num, vuln in enumerate(all_vulnerabilities, start_row + 1):
+    # Заполняем данные (уже сгруппированные)
+    for row_num, vuln in enumerate(grouped_vulnerabilities, start_row + 1):
         # №
         cell = ws.cell(row=row_num, column=1, value=row_num - start_row)
         cell.border = CELL_BORDER
@@ -154,7 +251,7 @@ def add_sca_sheet(workbook, enriched_trivy_path):
         cell.border = CELL_BORDER
         cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
-        # Путь
+        # Путь (объединенный)
         cell = ws.cell(row=row_num, column=3, value=vuln['path'])
         cell.border = CELL_BORDER
         cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
@@ -169,41 +266,49 @@ def add_sca_sheet(workbook, enriched_trivy_path):
         cell.border = CELL_BORDER
         cell.alignment = Alignment(horizontal='left', vertical='center')
 
-        # Идентификатор уязвимости
+        # Идентификатор уязвимости (объединенный)
         cell = ws.cell(row=row_num, column=6, value=vuln['vulnerability_id'])
         cell.border = CELL_BORDER
-        cell.alignment = Alignment(horizontal='center', vertical='center')
+        cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
-        # Уровень критичности
-        severity = vuln['severity']
-        cell = ws.cell(row=row_num, column=7, value=severity)
+        # Уровень критичности (объединенный) - с переносом по словам
+        cell = ws.cell(row=row_num, column=7, value=vuln['severity'])
         cell.border = CELL_BORDER
-        cell.alignment = Alignment(horizontal='center', vertical='center')
+        # Принудительно устанавливаем перенос текста
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True, text_rotation=0)
 
-        # Срок устранения
+        # Принудительно устанавливаем высоту строки для автоматического расчета
+        ws.row_dimensions[row_num].height = None
+
+        # Срок устранения (от наивысшего уровня критичности)
         cell = ws.cell(row=row_num, column=8, value=vuln['remediation_date'])
         cell.border = CELL_BORDER
         cell.alignment = Alignment(horizontal='center', vertical='center')
 
-        # Статус (пустой)
-        cell = ws.cell(row=row_num, column=9, value='')
+        # Статус (объединенный)
+        cell = ws.cell(row=row_num, column=9, value=vuln['status'])
         cell.border = CELL_BORDER
         cell.alignment = Alignment(horizontal='center', vertical='center')
 
-        # Комментарий (пустой)
-        cell = ws.cell(row=row_num, column=10, value='')
+        # Комментарий (объединенный)
+        cell = ws.cell(row=row_num, column=10, value=vuln['comment'])
         cell.border = CELL_BORDER
         cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
+    # Дополнительно проходим по всем строкам столбца G и принудительно применяем перенос
+    for row_num in range(start_row + 1, start_row + len(grouped_vulnerabilities) + 1):
+        cell = ws.cell(row=row_num, column=7)
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True, text_rotation=0)
+
     # Добавляем выпадающие списки для колонки "Статус"
-    if all_vulnerabilities:
-        add_dropdown_lists(ws, len(all_vulnerabilities), start_row, workbook)
+    if grouped_vulnerabilities:
+        add_dropdown_lists(ws, len(grouped_vulnerabilities), start_row, workbook)
 
     # Настраиваем ширину колонок
     set_sca_column_widths(ws)
 
     # Добавляем фильтры
-    ws.auto_filter.ref = f"A{start_row}:J{len(all_vulnerabilities) + start_row}"
+    ws.auto_filter.ref = f"A{start_row}:J{len(grouped_vulnerabilities) + start_row}"
 
     # Замораживаем строку с заголовками
     ws.freeze_panes = f'A{start_row + 1}'

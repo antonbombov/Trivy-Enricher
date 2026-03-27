@@ -1,106 +1,98 @@
 # ptai_processor.py
-import re
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Union
+from lxml import html
 
 
 class PTAIParser:
-    """
-    Парсер для HTML отчетов PTAI
-    Извлекает информацию о проекте и уязвимостях
-    """
-
-    def __init__(self, html_content: str):
-        """
-        Инициализация парсера с HTML контентом
-        """
-        self.html = html_content
+    def __init__(self, html_content: str, debug: bool = False):
+        self.tree = html.fromstring(html_content)
+        self.debug = debug
         self.project_name = self._extract_project_name()
         self.vulnerabilities = self._extract_vulnerabilities()
 
     def _extract_project_name(self) -> str:
-        """
-        Извлекает название проекта из HTML
-        """
-        match = re.search(
-            r'<td class="option-description">Проект</td>\s*<td class="option-value-semibold">\s*([^<]+)\s*</td>',
-            self.html)
-        return match.group(1).strip() if match else "Unknown"
+        project_xpath = "//td[contains(@class, 'option-description') and normalize-space(text())='Проект']/following-sibling::td[contains(@class, 'option-value-semibold')]/text()"
+        result = self.tree.xpath(project_xpath)
+        return result[0].strip() if result else "Unknown"
 
     def _extract_vulnerabilities(self) -> List[Dict]:
-        """
-        Извлекает все уязвимости из HTML
-        """
         vulns = []
 
-        # Ищем все группы уязвимостей
-        groups = re.findall(
-            r'<div class="vulnerability-group">(.*?)</div>\s*</div>\s*</div>\s*</div>\s*<div id="glossary"',
-            self.html,
-            re.DOTALL
-        )
+        # Находим все таблицы с уязвимостями
+        root_tables = self.tree.xpath("//table[@class='vulnerability-root-table']")
 
-        for group in groups:
-            # Тип уязвимости из группы
-            type_match = re.search(r'<div class="vulnerability-type-name[^"]*">\s*([^<]+)\s*</div>', group)
-            vuln_type = type_match.group(1).strip() if type_match else ""
+        if self.debug:
+            print(f"   [DEBUG] Найдено таблиц vulnerability-root-table: {len(root_tables)}")
 
-            # Ищем все уязвимости в группе
-            vuln_blocks = re.findall(r'<div class="vulnerability-info[^>]*>(.*?)</div>\s*</div>\s*</div>', group,
-                                     re.DOTALL)
+        confirmed_count = 0
+        rejected_count = 0
 
-            for block in vuln_blocks:
-                vuln = {
-                    'id': '',
-                    'type': vuln_type,
-                    'file': '',
-                    'status': '',
-                    'comment': '',
-                    'cwe': ''
-                }
+        for tbl in root_tables:
+            # Проверяем статус уязвимости
+            confirmed = tbl.xpath(".//div[@class='vulnerability-statuses']//i[@title='Подтверждена']")
+            rejected = tbl.xpath(".//div[@class='vulnerability-statuses']//i[@title='Опровергнута']")
 
-                # ID
-                id_match = re.search(
-                    r'<td class="option-description">Идентификатор</td>\s*<td class="option-value">#?([^<]+)</td>',
-                    block)
-                if id_match:
-                    vuln['id'] = id_match.group(1).strip().replace('#', '')
+            status = None
+            if confirmed:
+                status = 'Подтверждена'
+                confirmed_count += 1
+            elif rejected:
+                status = 'Опровергнута'
+                rejected_count += 1
+            else:
+                # Если нет иконки статуса, пропускаем (как в первой группе)
+                continue
 
-                # Уязвимый файл
-                file_match = re.search(
-                    r'<td class="option-description">Уязвимый файл</td>\s*<td class="option-value"><pre>([^<]+)</pre></td>',
-                    block)
-                if file_match:
-                    vuln['file'] = file_match.group(1).strip()
+            vuln = {
+                'id': '',
+                'type': '',
+                'file': '',
+                'status': status,
+                'comment': '',
+                'cwe': ''
+            }
 
-                # CWE
-                cwe_match = re.search(
-                    r'<a target="_blank" href="https://cwe\.mitre\.org/data/definitions/(\d+)\.html">', block)
-                if cwe_match:
-                    vuln['cwe'] = f"CWE-{cwe_match.group(1)}"
+            # ID уязвимости
+            vuln_id = tbl.xpath(
+                ".//table[@class='vulnerability-detail-info']//tr[td[@class='option-description' and normalize-space(text())='Идентификатор']]/td[@class='option-value']//text()")
+            if vuln_id:
+                vuln['id'] = ''.join(vuln_id).strip().replace('#', '')
 
-                # Статус
-                status_match = re.search(r'<i class="[^"]*-icon" title="([^"]+)"', block)
-                if status_match:
-                    vuln['status'] = status_match.group(1).strip()
+            # Уязвимый файл
+            vuln_file = tbl.xpath(
+                ".//table[@class='vulnerability-detail-info']//tr[td[@class='option-description' and normalize-space(text())='Уязвимый файл']]/td[@class='option-value']//text()")
+            if vuln_file:
+                vuln['file'] = ''.join(vuln_file).strip()
 
-                # Комментарий
-                comment_match = re.search(r'<div class="comment">.*?<div style="flex: 1 1 100%">\s*<div>([^<]+)</div>',
-                                          block, re.DOTALL)
-                if comment_match:
-                    vuln['comment'] = comment_match.group(1).strip()
+            # Тип уязвимости (из родительского vulnerability)
+            vuln_type = tbl.xpath(
+                ".//ancestor::div[@class='vulnerability'][1]//div[contains(@class,'vulnerability-type-name')][1]/text()")
+            if vuln_type:
+                vuln['type'] = vuln_type[0].strip()
 
+            # CWE (ищем в ссылке)
+            cwe_link = tbl.xpath(".//a[contains(@href, 'cwe.mitre.org')]/text()")
+            if cwe_link:
+                vuln['cwe'] = cwe_link[0].strip()
+
+            # Комментарий
+            vuln_comment = tbl.xpath(".//div[@class='comments-root']//div[@class='comment']/div/div[1]/text()")
+            if vuln_comment:
+                vuln['comment'] = vuln_comment[0].strip()
+
+            if vuln['id']:
                 vulns.append(vuln)
+
+        if self.debug:
+            print(f"   [DEBUG] Найдено подтвержденных уязвимостей: {confirmed_count}")
+            print(f"   [DEBUG] Найдено опровергнутых уязвимостей: {rejected_count}")
 
         return vulns
 
     def get_data_for_excel(self) -> List[Dict]:
-        """
-        Подготавливает данные для Excel отчета
-        """
         result = []
         for v in self.vulnerabilities:
-            # Формируем полный тип: CWE + название
             full_type = v['type']
             if v['cwe'] and v['type'] and v['cwe'] not in v['type']:
                 full_type = f"{v['cwe']} {v['type']}"
@@ -119,21 +111,12 @@ class PTAIParser:
         return result
 
 
-def prepare_ptai_excel_data(html_file_path: Union[str, Path]) -> Tuple[List[Dict], str]:
-    """
-    Подготавливает данные из PTAI отчета для Excel
-
-    Args:
-        html_file_path: Путь к HTML файлу отчета PTAI
-
-    Returns:
-        Tuple[данные для Excel, имя проекта]
-    """
+def prepare_ptai_excel_data(html_file_path: Union[str, Path], debug: bool = True) -> Tuple[List[Dict], str]:
     html_file_path = Path(html_file_path)
 
     try:
         with open(html_file_path, 'r', encoding='utf-8') as f:
-            html = f.read()
+            html_content = f.read()
     except FileNotFoundError:
         print(f"❌ Ошибка: Файл '{html_file_path}' не найден")
         return [], "Unknown"
@@ -141,73 +124,48 @@ def prepare_ptai_excel_data(html_file_path: Union[str, Path]) -> Tuple[List[Dict
         print(f"❌ Ошибка при чтении файла: {e}")
         return [], "Unknown"
 
-    parser = PTAIParser(html)
+    parser = PTAIParser(html_content, debug=debug)
 
     if not parser.vulnerabilities:
-        print(f"   В отчете PTAI не найдено уязвимостей")
+        print(f"   ⚠️ В отчете PTAI не найдено уязвимостей")
     else:
-        print(f"   Найдено уязвимостей в PTAI: {len(parser.vulnerabilities)}")
+        confirmed = [v for v in parser.vulnerabilities if v['status'] == 'Подтверждена']
+        rejected = [v for v in parser.vulnerabilities if v['status'] == 'Опровергнута']
+        print(f"   ✅ Найдено уязвимостей в PTAI: {len(parser.vulnerabilities)}")
+        print(f"      - Подтверждено: {len(confirmed)}")
+        print(f"      - Опровергнуто: {len(rejected)}")
 
     return parser.get_data_for_excel(), parser.project_name
 
 
 def find_ptai_report_for_trivy(trivy_file_path: Union[str, Path], ptai_directory: Union[str, Path]) -> Optional[Path]:
-    """
-    Ищет соответствующий PTAI отчет для Trivy отчета
-
-    Args:
-        trivy_file_path: Путь к Trivy отчету
-        ptai_directory: Директория с PTAI отчетами
-
-    Returns:
-        Path к PTAI отчету или None
-    """
     trivy_path = Path(trivy_file_path)
     ptai_dir = Path(ptai_directory)
 
     if not ptai_dir.exists():
         return None
 
-    # Ищем все HTML файлы
     html_files = list(ptai_dir.glob("*.html"))
     if not html_files:
         return None
 
-    # Получаем базовое имя Trivy отчета (без _enriched и расширения)
-    base_name = trivy_path.stem
-    base_name = base_name.replace('_enriched', '')
-
-    # Пробуем найти точное совпадение по имени
+    base_name = trivy_path.stem.replace('_enriched', '')
     for html_file in html_files:
-        if base_name in html_file.stem:
+        if html_file.stem == base_name:
             return html_file
 
-    # Если точного совпадения нет, возвращаем первый HTML файл
-    return html_files[0]
+    return None
 
 
 def get_ptai_stats(html_file_path: Union[str, Path]) -> Dict:
-    """
-    Возвращает статистику по PTAI отчету
-
-    Args:
-        html_file_path: Путь к HTML файлу отчета PTAI
-
-    Returns:
-        Словарь со статистикой
-    """
     try:
         with open(html_file_path, 'r', encoding='utf-8') as f:
-            html = f.read()
-
-        parser = PTAIParser(html)
-
-        # Подсчет статусов
+            html_content = f.read()
+        parser = PTAIParser(html_content, debug=False)
         status_counts = {}
         for vuln in parser.vulnerabilities:
             status = vuln['status'] or 'Не указан'
             status_counts[status] = status_counts.get(status, 0) + 1
-
         return {
             'project_name': parser.project_name,
             'total_vulnerabilities': len(parser.vulnerabilities),
@@ -222,36 +180,3 @@ def get_ptai_stats(html_file_path: Union[str, Path]) -> Dict:
             'has_data': False,
             'error': str(e)
         }
-
-
-def main():
-    """
-    Функция для тестирования
-    """
-    import sys
-
-    if len(sys.argv) < 2:
-        print("Использование: python ptai_processor.py <путь_к_html_файлу>")
-        print("Пример: python ptai_processor.py report.html")
-        sys.exit(1)
-
-    html_file = sys.argv[1]
-
-    # Подготавливаем данные для Excel
-    data, project_name = prepare_ptai_excel_data(html_file)
-
-    print(f"\n📊 Статистика PTAI отчета:")
-    print(f"   Проект: {project_name}")
-    print(f"   Уязвимостей: {len(data)}")
-
-    if data:
-        print(f"\nПервые 3 уязвимости:")
-        for i, vuln in enumerate(data[:3], 1):
-            print(f"\n   {i}. ID: {vuln['ID уязвимости']}")
-            print(f"      Тип: {vuln['Тип уязвимости']}")
-            print(f"      Файл: {vuln['Класс и метод / Уязвимый файл']}")
-            print(f"      Статус: {vuln['Статус']}")
-
-
-if __name__ == "__main__":
-    main()

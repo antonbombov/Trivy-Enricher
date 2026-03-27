@@ -29,6 +29,8 @@ RUN echo '{ \
   "project_version": "0.7.0" \
 }' > /app/config.json
 
-CMD ["python", "-u", "main.py"]
+# Точка входа с возможностью передавать аргументы
+ENTRYPOINT ["python", "-u", "main.py"]
+CMD []
 
 VOLUME ["/scan/input", "/scan/cache", "/scan/results"]
