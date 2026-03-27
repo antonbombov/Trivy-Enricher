@@ -15,6 +15,8 @@ Python 3.7+
 [SploitScan](https://github.com/xaitax/SploitScan)  
 <sub><sup>***рекомендуется к применению модифицированный [sploitscan](https://github.com/antonbombov/SploitScan)  (v.0.14.3 при отсутствии эксплойтов включает вместо них информационные ссылки)</sub></sup> 
 
+
+
 ## Установка
 1. Клонируйте репозиторий:
 ```bash
