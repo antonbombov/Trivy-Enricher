@@ -1,5 +1,4 @@
 # main.py
-import argparse
 import sys
 import time
 from pathlib import Path
@@ -9,29 +8,7 @@ from excel_reporter import generate_excel_report
 from config_manager import load_config, setup_directories, find_ptai_report_for_trivy
 from cache_cleaner import cleanup_old_cache, get_cache_stats
 from cdn_cache_manager import get_cdn_cache_stats
-
-
-def parse_arguments():
-    """
-    Парсинг аргументов командной строки
-    """
-    parser = argparse.ArgumentParser(
-        description='Trivy Enricher - обогащение отчетов Trivy данными SploitScan',
-        usage='python main.py [-h] [-html] [-excel]'
-    )
-    parser.add_argument('-html', action='store_true',
-                        help='Генерировать HTML отчет')
-    parser.add_argument('-excel', action='store_true',
-                        help='Генерировать Excel отчет (SCA + PTAI анализы)')
-
-    args = parser.parse_args()
-
-    # Если аргументы не указаны - показываем help
-    if not any(vars(args).values()):
-        parser.print_help()
-        sys.exit(1)
-
-    return args
+from argument_parser import parse_arguments, get_report_types
 
 
 def cleanup_logs(output_dir):
@@ -111,6 +88,7 @@ def process_reports(trivy_files, args, config, output_dir, cache_dir):
     """
     Обрабатывает найденные отчеты согласно аргументам
     """
+    generate_html, generate_excel_flag, skip_enrich = get_report_types(args)
     processed_count = 0
     html_count = 0
     excel_count = 0
@@ -120,27 +98,33 @@ def process_reports(trivy_files, args, config, output_dir, cache_dir):
         print(f"ОБРАБОТКА: {trivy_file.name}")
         print(f"{'=' * 60}")
 
-        # Обогащаем отчет
-        start_time = time.time()
-        enriched_file = enrich_trivy_report(trivy_file, output_dir)
-        total_time = time.time() - start_time
+        # Определяем файл для отчетов
+        if skip_enrich:
+            print("Режим: БЕЗ обогащения SploitScan (используется исходный отчет)")
+            report_file = trivy_file
+        else:
+            print("Режим: С обогащением SploitScan")
+            start_time = time.time()
+            report_file = enrich_trivy_report(trivy_file, output_dir)
+            total_time = time.time() - start_time
 
-        if not enriched_file:
-            print(f"❌ ОШИБКА обогащения отчета {trivy_file.name}")
-            continue
+            if not report_file:
+                print(f"❌ ОШИБКА обогащения отчета {trivy_file.name}")
+                continue
 
-        print(f"✅ УСПЕШНО ЗА {total_time:.1f}с")
-        print(f"📄 Обогащенный JSON: {enriched_file.name}")
+            print(f"✅ Обогащение выполнено за {total_time:.1f}с")
+            print(f"📄 Обогащенный JSON: {report_file.name}")
+
         processed_count += 1
 
         # HTML отчет по запросу
-        if args.html:
-            if generate_html_report(enriched_file, output_dir, cache_dir):
+        if generate_html:
+            if generate_html_report(report_file, output_dir, cache_dir):
                 html_count += 1
 
         # Excel отчет по запросу
-        if args.excel:
-            if generate_excel(enriched_file, output_dir, config):
+        if generate_excel_flag:
+            if generate_excel(report_file, output_dir, config):
                 excel_count += 1
 
     return processed_count, html_count, excel_count
@@ -152,6 +136,7 @@ def main():
     """
     # Парсим аргументы командной строки
     args = parse_arguments()
+    generate_html, generate_excel_flag, skip_enrich = get_report_types(args)
 
     # Загружаем конфигурацию
     config = load_config()
@@ -162,40 +147,45 @@ def main():
     print("TRIVY ENRICHER - ОБОГАЩЕНИЕ ОТЧЕТОВ TRIVY")
     print("=" * 60)
     print(f"Режимы работы:")
-    if args.html:
+    if generate_html:
         print("  ✅ HTML отчеты - ВКЛЮЧЕНЫ")
-    if args.excel:
+    if generate_excel_flag:
         print("  ✅ Excel отчеты - ВКЛЮЧЕНЫ")
+    if skip_enrich:
+        print("  ⚠️  Обогащение SploitScan - ОТКЛЮЧЕНО (используются исходные отчеты)")
+    else:
+        print("  🔄 Обогащение SploitScan - ВКЛЮЧЕНО")
     print("=" * 60)
 
-    # Показываем статистику кэша SploitScan
-    sploitscan_stats = get_cache_stats()
-    print(f"\n📊 Статистика кэша:")
-    print(
-        f"   SploitScan: {sploitscan_stats['total_files']} файлов (макс. возраст: {sploitscan_stats['max_age_days']} дней)")
+    # Показываем статистику кэша (только если нужно обогащение)
+    if not skip_enrich:
+        sploitscan_stats = get_cache_stats()
+        print(f"\n📊 Статистика кэша:")
+        print(
+            f"   SploitScan: {sploitscan_stats['total_files']} файлов (макс. возраст: {sploitscan_stats['max_age_days']} дней)")
 
-    # Показываем статистику кэша CDN
-    cdn_stats = get_cdn_cache_stats(cache_dir)
-    if cdn_stats['tailwind_cached']:
-        print(f"   CDN: Tailwind JS {cdn_stats.get('tailwind_size', 0)} байт")
-    else:
-        print(f"   CDN: пуст (будет загружен при первом отчете)")
+        cdn_stats = get_cdn_cache_stats(cache_dir)
+        if cdn_stats['tailwind_cached']:
+            print(f"   CDN: Tailwind JS {cdn_stats.get('tailwind_size', 0)} байт")
+        else:
+            print(f"   CDN: пуст (будет загружен при первом отчете)")
 
-    # Автоматическая очистка старых файлов в кэше
-    deleted_count = cleanup_old_cache()
-    if deleted_count > 0:
-        print(f"   Удалено старых файлов: {deleted_count}")
+        deleted_count = cleanup_old_cache()
+        if deleted_count > 0:
+            print(f"   Удалено старых файлов: {deleted_count}")
 
-    print(f"\n🧹 Очистка старых логов...")
-    cleanup_logs(output_dir)
-    print("   Очистка логов завершена")
+        print(f"\n🧹 Очистка старых логов...")
+        cleanup_logs(output_dir)
+        print("   Очистка логов завершена")
 
     print(f"\n📁 Директории:")
     print(f"   Входные отчеты: {scan_dir}")
-    print(f"   Кэш SploitScan: {cache_dir}")
-    print(f"   Кэш CDN: {cache_dir / 'cdn'}")
+    if not skip_enrich:
+        print(f"   Кэш SploitScan: {cache_dir}")
+        print(f"   Кэш CDN: {cache_dir / 'cdn'}")
     print(f"   Результаты: {output_dir}")
-    print(f"   Логи SploitScan: {output_dir / 'logs'}")
+    if not skip_enrich:
+        print(f"   Логи SploitScan: {output_dir / 'logs'}")
 
     # Ищем отчеты в указанной папке scan_dir
     trivy_files = list(scan_dir.glob("*.json"))
@@ -226,9 +216,9 @@ def main():
     print("ИТОГОВАЯ СТАТИСТИКА")
     print(f"{'=' * 60}")
     print(f"✅ Обработано отчетов: {processed}")
-    if args.html:
+    if generate_html:
         print(f"📊 Создано HTML отчетов: {html_created}")
-    if args.excel:
+    if generate_excel_flag:
         print(f"📈 Создано Excel отчетов: {excel_created}")
     print(f"⏱️ Общее время выполнения: {total_time:.1f}с")
     print(f"{'=' * 60}")
