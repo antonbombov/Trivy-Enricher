@@ -9,10 +9,10 @@ RUN git clone https://github.com/antonbombov/SploitScan /sploitscan
 RUN git clone https://github.com/antonbombov/Trivy-Enricher /app
 
 # Устанавливаем зависимости SploitScan
-RUN pip install --no-cache-dir -r /sploitscan/requirements.txt
+RUN pip install --trusted-host pypi.org --trusted-host pypi.python.org --trusted-host files.pythonhosted.org --no-cache-dir -r /sploitscan/requirements.txt
 
 # Устанавливаем зависимости основного проекта
-RUN pip install --no-cache-dir -r /app/requirements.txt
+RUN pip install --trusted-host pypi.org --trusted-host pypi.python.org --trusted-host files.pythonhosted.org --no-cache-dir -r /app/requirements.txt
 
 # Создаем директории для монтирования
 RUN mkdir -p /scan/input /scan/cache /scan/results
