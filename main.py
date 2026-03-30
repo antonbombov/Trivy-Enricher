@@ -11,6 +11,25 @@ from cdn_cache_manager import get_cdn_cache_stats
 from argument_parser import parse_arguments, get_report_types
 
 
+def print_banner():
+    """
+    Выводит ASCII-арт баннер при запуске
+    """
+    banner = r"""
+██╗   ██╗██╗██████╗ ███████╗ ██████╗██╗  ██╗███████╗ ██████╗██╗  ██╗███████╗██████╗ 
+██║   ██║██║██╔══██╗██╔════╝██╔════╝██║  ██║██╔════╝██╔════╝██║ ██╔╝██╔════╝██╔══██╗
+██║   ██║██║██████╔╝█████╗  ██║     ███████║█████╗  ██║     █████╔╝ █████╗  ██████╔╝
+╚██╗ ██╔╝██║██╔══██╗██╔══╝  ██║     ██╔══██║██╔══╝  ██║     ██╔═██╗ ██╔══╝  ██╔══██╗
+ ╚████╔╝ ██║██████╔╝███████╗╚██████╗██║  ██║███████╗╚██████╗██║  ██╗███████╗██║  ██║
+  ╚═══╝  ╚═╝╚═════╝ ╚══════╝ ╚═════╝╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝
+
+    """
+    print(banner)
+    print("=" * 70)
+    print("VIBECHECKER - Trivy Enricher with SploitScan")
+    print("=" * 70)
+
+
 def cleanup_logs(output_dir):
     """
     Очищает папку с логами перед запуском
@@ -100,10 +119,10 @@ def process_reports(trivy_files, args, config, output_dir, cache_dir):
 
         # Определяем файл для отчетов
         if skip_enrich:
-            print("Режим: БЕЗ обогащения SploitScan (используется исходный отчет)")
+            print("⚡ Режим: БЕЗ обогащения SploitScan (используется исходный отчет)")
             report_file = trivy_file
         else:
-            print("Режим: С обогащением SploitScan")
+            print("🔄 Режим: С обогащением SploitScan")
             start_time = time.time()
             report_file = enrich_trivy_report(trivy_file, output_dir)
             total_time = time.time() - start_time
@@ -134,6 +153,9 @@ def main():
     """
     Основная функция программы
     """
+    # Выводим баннер
+    print_banner()
+
     # Парсим аргументы командной строки
     args = parse_arguments()
     generate_html, generate_excel_flag, skip_enrich = get_report_types(args)
@@ -142,20 +164,14 @@ def main():
     config = load_config()
     scan_dir, cache_dir, output_dir = setup_directories(config)
 
-    # Очищаем логи перед запуском
-    print("=" * 60)
-    print("TRIVY ENRICHER - ОБОГАЩЕНИЕ ОТЧЕТОВ TRIVY")
-    print("=" * 60)
-    print(f"Режимы работы:")
-    if generate_html:
-        print("  ✅ HTML отчеты - ВКЛЮЧЕНЫ")
-    if generate_excel_flag:
-        print("  ✅ Excel отчеты - ВКЛЮЧЕНЫ")
+    print(f"\n📋 Режимы работы:")
+    print(f"   HTML отчеты: {'✅ ВКЛЮЧЕНЫ' if generate_html else '❌ ОТКЛЮЧЕНЫ'}")
+    print(f"   Excel отчеты: {'✅ ВКЛЮЧЕНЫ' if generate_excel_flag else '❌ ОТКЛЮЧЕНЫ'}")
     if skip_enrich:
-        print("  ⚠️  Обогащение SploitScan - ОТКЛЮЧЕНО (используются исходные отчеты)")
+        print(f"   ⚡ Обогащение SploitScan: ОТКЛЮЧЕНО (используются исходные отчеты)")
     else:
-        print("  🔄 Обогащение SploitScan - ВКЛЮЧЕНО")
-    print("=" * 60)
+        print(f"   🔄 Обогащение SploitScan: ВКЛЮЧЕНО")
+    print("=" * 70)
 
     # Показываем статистику кэша (только если нужно обогащение)
     if not skip_enrich:
@@ -172,20 +188,20 @@ def main():
 
         deleted_count = cleanup_old_cache()
         if deleted_count > 0:
-            print(f"   Удалено старых файлов: {deleted_count}")
+            print(f"   🧹 Удалено старых файлов из кэша: {deleted_count}")
 
         print(f"\n🧹 Очистка старых логов...")
         cleanup_logs(output_dir)
         print("   Очистка логов завершена")
 
     print(f"\n📁 Директории:")
-    print(f"   Входные отчеты: {scan_dir}")
+    print(f"   📂 Входные отчеты: {scan_dir}")
     if not skip_enrich:
-        print(f"   Кэш SploitScan: {cache_dir}")
-        print(f"   Кэш CDN: {cache_dir / 'cdn'}")
-    print(f"   Результаты: {output_dir}")
+        print(f"   💾 Кэш SploitScan: {cache_dir}")
+        print(f"   🌐 Кэш CDN: {cache_dir / 'cdn'}")
+    print(f"   📄 Результаты: {output_dir}")
     if not skip_enrich:
-        print(f"   Логи SploitScan: {output_dir / 'logs'}")
+        print(f"   📋 Логи SploitScan: {output_dir / 'logs'}")
 
     # Ищем отчеты в указанной папке scan_dir
     trivy_files = list(scan_dir.glob("*.json"))
@@ -212,16 +228,17 @@ def main():
     total_time = time.time() - total_start_time
 
     # Итоговая статистика
-    print(f"\n{'=' * 60}")
+    print(f"\n{'=' * 70}")
     print("ИТОГОВАЯ СТАТИСТИКА")
-    print(f"{'=' * 60}")
+    print(f"{'=' * 70}")
     print(f"✅ Обработано отчетов: {processed}")
     if generate_html:
         print(f"📊 Создано HTML отчетов: {html_created}")
     if generate_excel_flag:
         print(f"📈 Создано Excel отчетов: {excel_created}")
     print(f"⏱️ Общее время выполнения: {total_time:.1f}с")
-    print(f"{'=' * 60}")
+    print(f"{'=' * 70}")
+    print("\n✨ VIBECHECKER завершил работу ✨")
 
 
 if __name__ == "__main__":

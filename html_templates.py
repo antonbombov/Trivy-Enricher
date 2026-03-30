@@ -222,7 +222,7 @@ def get_css_styles():
     /* Status color chips */
     .bg-blue-100 { background-color: #dbeafe; }
     .text-blue-700 { color: #1e40af; }
-    .dark .bg-blue-800\/40 { background-color: rgba(30, 64, 175, 0.4); }
+    .dark .bg-blue-800/40 { background-color: rgba(30, 64, 175, 0.4); }
     .dark .text-blue-100 { color: #dbeafe; }
 
     .bg-purple-100 { background-color: #e9d5ff; }
