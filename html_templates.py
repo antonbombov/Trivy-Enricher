@@ -227,7 +227,7 @@ def get_css_styles():
 
     .bg-purple-100 { background-color: #e9d5ff; }
     .text-purple-700 { color: #7e22ce; }
-    .dark .bg-purple-800\/40 { background-color: rgba(126, 34, 206, 0.4); }
+    .dark .bg-blue-800/40 { background-color: rgba(30, 64, 175, 0.4); }
     .dark .text-purple-100 { color: #e9d5ff; }
 
     .bg-indigo-100 { background-color: #e0e7ff; }
