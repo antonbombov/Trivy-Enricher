@@ -44,7 +44,8 @@ PTAI_COLUMN_HEADERS = [
     'Класс и метод / Уязвимый файл',
     'Комментарий',
     'Статус',
-    'CWSS / Vисп',
+    'CWSS',
+    'Дата устранения',
     'Компенсирующие меры'
 ]
 
@@ -390,8 +391,8 @@ def add_ptai_sheet(workbook, html_file_path):
         cell.border = CELL_BORDER
         cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
-        # CWSS / Vисп
-        cwss_value = item['CWSS / Vисп']
+        # CWSS
+        cwss_value = item['CWSS']
         # Если статус "Опровергнута", ставим прочерк
         if status_value.lower() == 'опровергнута' and not cwss_value:
             cwss_value = '—'
@@ -399,21 +400,43 @@ def add_ptai_sheet(workbook, html_file_path):
         cell.border = CELL_BORDER
         cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
+        # Дата устранения - формула на основе CWSS (колонка G)
+        cell = ws.cell(row=row, column=8)
+        # Создаем формулу на основе значения в колонке G (CWSS)
+        # Если CWSS >= 75 -> "Устранение в текущем релизе / выпуск fix-патча"
+        # Если 30 <= CWSS < 75 -> "Планирование исправления в ближайших релизах / устранение в очередном патче"
+        # Если 10 <= CWSS < 30 -> "Рекомендуется устранить в будущих релизах"
+        # Если статус "Опровергнута" -> прочерк
+        # Если CWSS пусто или не число -> пустая строка
+
+        formula = f'''=IF(OR(ISBLANK(G{row}), NOT(ISNUMBER(G{row}))), "",
+            IF(LOWER(F{row})="опровергнута", "—",
+                IF(G{row}>=75, "Устранение в текущем релизе / выпуск fix-патча",
+                    IF(G{row}>=30, "Планирование исправления в ближайших релизах / устранение в очередном патче",
+                        IF(G{row}>=10, "Рекомендуется устранить в будущих релизах", "")
+                    )
+                )
+            )
+        )'''
+        cell.value = formula
+        cell.border = CELL_BORDER
+        cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+
         # Компенсирующие меры
         measures_value = item['Компенсирующие меры']
         # Если статус "Опровергнута", ставим прочерк
         if status_value.lower() == 'опровергнута' and not measures_value:
             measures_value = '—'
-        cell = ws.cell(row=row, column=8, value=measures_value)
+        cell = ws.cell(row=row, column=9, value=measures_value)
         cell.border = CELL_BORDER
         cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
     # Настраиваем ширину колонок
     set_ptai_column_widths(ws)
 
-    # Добавляем фильтры
+    # Добавляем фильтры (9 колонок: A-I)
     if data:
-        ws.auto_filter.ref = f"A5:H{len(data) + 5}"
+        ws.auto_filter.ref = f"A5:I{len(data) + 5}"
 
     # Замораживаем строку с заголовками
     ws.freeze_panes = 'A6'
