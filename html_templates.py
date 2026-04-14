@@ -55,6 +55,8 @@ def get_base_html():
             <h1 class="text-lg font-semibold tracking-tight">{artifact_name}</h1>
             <p class="text-xs muted">
               Project version: v{project_version} • 
+              Trivy version: {trivy_version} • 
+              SploitScan version: {sploitscan_version}<br>
               Report generated: {timestamp}
             </p>
           </div>

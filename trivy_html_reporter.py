@@ -7,6 +7,19 @@ from html_templates import get_base_html, get_css_styles, get_javascript
 from cdn_cache_manager import get_tailwind_js
 
 
+def extract_trivy_version(trivy_data):
+    """
+    Извлекает версию Trivy из отчета
+    """
+    try:
+        if 'Trivy' in trivy_data and 'Version' in trivy_data['Trivy']:
+            return trivy_data['Trivy']['Version']
+        else:
+            return "please, use 0.69.0 or latest"
+    except Exception:
+        return "please, use 0.69.0 or latest"
+
+
 def generate_trivy_html_report(enriched_trivy_path, output_dir, cache_dir):
     """
     Генерирует HTML отчет из обогащенного отчета Trivy в стиле SploitScan
@@ -36,13 +49,17 @@ def generate_trivy_html_report(enriched_trivy_path, output_dir, cache_dir):
     # Собираем статистику и группируем данные
     stats, grouped_vulnerabilities = collect_statistics_and_group_data(trivy_data)
 
+    # Извлекаем версию Trivy из отчета
+    trivy_version = extract_trivy_version(trivy_data)
+
     # Генерируем HTML (с Tailwind JS или CDN ссылкой)
     html_content = generate_html_content(
         trivy_data,
         stats,
         grouped_vulnerabilities,
         Path(enriched_trivy_path).name,
-        tailwind_js  # может быть None - generate_html_content сам разберется
+        tailwind_js,
+        trivy_version
     )
 
     # Сохраняем файл
@@ -327,7 +344,7 @@ def get_cvss_data(vuln):
     return 'N/A', 'N/A'
 
 
-def generate_html_content(trivy_data, stats, grouped_vulnerabilities, report_filename, tailwind_js):
+def generate_html_content(trivy_data, stats, grouped_vulnerabilities, report_filename, tailwind_js, trivy_version):
     """
     Генерирует полный HTML контент с встроенным Tailwind JS
     """
@@ -335,6 +352,7 @@ def generate_html_content(trivy_data, stats, grouped_vulnerabilities, report_fil
 
     config = load_config()
     project_version = config.get('project_version', '1.0.0')
+    sploitscan_version = config.get('sploitscan_version', 'unknown')
     artifact_name = get_artifact_name(report_filename)
 
     main_content = generate_main_content(stats, grouped_vulnerabilities)
@@ -348,6 +366,8 @@ def generate_html_content(trivy_data, stats, grouped_vulnerabilities, report_fil
         main_content=main_content,
         artifact_name=artifact_name,
         project_version=project_version,
+        trivy_version=trivy_version,
+        sploitscan_version=sploitscan_version,
         total_cves=stats['total_cves'],
         timestamp=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         css_styles=get_css_styles(),
