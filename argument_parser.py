@@ -10,19 +10,22 @@ def parse_arguments():
     """
     parser = argparse.ArgumentParser(
         description='Trivy Enricher - обогащение отчетов Trivy данными SploitScan',
-        usage='python main.py [-h] [-html] [-excel] [-skip-enrich] [-only-cache] [-ptai-only]',
+        usage='python main.py [-h] [-html] [-excel] [--skip-enrich | --se] [--only-cache | --oc] [--ptai-only | --po]',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Примеры использования:
-  python main.py -html                 # Только HTML отчеты (с обогащением)
-  python main.py -excel                # Только Excel отчеты (с обогащением)
-  python main.py -html -excel          # Оба типа отчетов (с обогащением)
-  python main.py -html -skip-enrich    # HTML отчет без обогащения (только исходный Trivy)
-  python main.py -excel -skip-enrich   # Excel отчет без обогащения (только исходный Trivy)
-  python main.py -html -only-cache     # HTML отчет только из кэша (без вызова SploitScan)
-  python main.py -excel -only-cache    # Excel отчет только из кэша (без вызова SploitScan)
-  python main.py -excel -ptai-only     # Только Excel отчет с PTAI анализом (без Trivy)
-  python main.py -h                    # Показать эту справку
+  python main.py -html                     # Только HTML отчеты (с обогащением)
+  python main.py -excel                    # Только Excel отчеты (с обогащением)
+  python main.py -html -excel              # Оба типа отчетов (с обогащением)
+  python main.py -html -excel --skip-enrich # Оба отчета без обогащения
+  python main.py -html -excel --only-cache  # Оба отчета только из кэша
+  python main.py -excel --ptai-only        # Только Excel отчет с PTAI анализом
+  python main.py -h                        # Показать эту справку
+
+Короткие формы опций:
+  --se      вместо --skip-enrich
+  --oc      вместо --only-cache
+  --po      вместо --ptai-only
         """
     )
 
@@ -39,19 +42,19 @@ def parse_arguments():
     )
 
     parser.add_argument(
-        '-skip-enrich', '-se',
+        '--skip-enrich', '--se',
         action='store_true',
         help='Пропустить обогащение SploitScan, использовать исходный отчет Trivy'
     )
 
     parser.add_argument(
-        '-only-cache', '-oc',
+        '--only-cache', '--oc',
         action='store_true',
         help='Использовать только кэшированные данные (без вызова SploitScan для отсутствующих CVE)'
     )
 
     parser.add_argument(
-        '-ptai-only', '-po',
+        '--ptai-only', '--po',
         action='store_true',
         help='Генерировать только Excel отчет с PTAI анализом (без Trivy SCA)'
     )
@@ -63,9 +66,9 @@ def parse_arguments():
         parser.print_help()
         sys.exit(1)
 
-    # Валидация: -ptai-only требует -excel
+    # Валидация: --ptai-only требует -excel
     if args.ptai_only and not args.excel:
-        print("❌ Ошибка: ключ -ptai-only может использоваться только вместе с -excel")
+        print("❌ Ошибка: ключ --ptai-only может использоваться только вместе с -excel")
         sys.exit(1)
 
     return args
@@ -103,19 +106,20 @@ def print_usage():
     """
     print("Trivy Enricher - обогащение отчетов Trivy данными SploitScan")
     print("=" * 60)
-    print("Использование: python main.py [-h] [-html] [-excel] [-skip-enrich] [-only-cache] [-ptai-only]")
-    print("\nОпции:")
+    print("Использование: python main.py [-h] [-html] [-excel] [--skip-enrich | --se] [--only-cache | --oc] [--ptai-only | --po]")
+    print("\nКоманды (один дефис):")
     print("  -html         Генерировать HTML отчет (интерактивный с фильтрами)")
     print("  -excel        Генерировать Excel отчет (SCA анализ + PTAI анализ)")
-    print("  -skip-enrich, -se   Пропустить обогащение SploitScan, использовать исходный отчет")
-    print("  -only-cache, -oc    Использовать только кэшированные данные (без вызова SploitScan)")
-    print("  -ptai-only, -po     Генерировать только Excel отчет с PTAI анализом (без Trivy)")
     print("  -h            Показать эту справку")
+    print("\nОпции (два дефиса):")
+    print("  --skip-enrich, --se   Пропустить обогащение SploitScan, использовать исходный отчет")
+    print("  --only-cache, --oc    Использовать только кэшированные данные (без вызова SploitScan)")
+    print("  --ptai-only, --po     Генерировать только Excel отчет с PTAI анализом (без Trivy)")
     print("\nПримеры:")
-    print("  python main.py -html                 # Только HTML отчеты (с обогащением)")
-    print("  python main.py -excel                # Только Excel отчеты (с обогащением)")
-    print("  python main.py -html -excel          # Оба типа отчетов (с обогащением)")
-    print("  python main.py -html -skip-enrich    # HTML отчет без обогащения")
-    print("  python main.py -html -only-cache     # HTML отчет только из кэша")
-    print("  python main.py -excel -ptai-only     # Только Excel отчет с PTAI анализом")
+    print("  python main.py -html                     # Только HTML отчеты (с обогащением)")
+    print("  python main.py -excel                    # Только Excel отчеты (с обогащением)")
+    print("  python main.py -html -excel              # Оба типа отчетов (с обогащением)")
+    print("  python main.py -html -excel --skip-enrich # Оба отчета без обогащения")
+    print("  python main.py -html -excel --only-cache  # Оба отчета только из кэша")
+    print("  python main.py -excel --ptai-only        # Только Excel отчет с PTAI анализом")
     print("=" * 60)

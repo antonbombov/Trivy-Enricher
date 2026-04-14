@@ -221,12 +221,10 @@ def main():
         else:
             print(f"   CDN: пуст (будет загружен при первом отчете)")
 
-        # Очистка кэша нужна только если мы не в режиме only_cache (или если только_cache, но всё равно можно очистить)
         deleted_count = cleanup_old_cache()
         if deleted_count > 0:
             print(f"   🧹 Удалено старых файлов из кэша: {deleted_count}")
 
-        # Очищаем логи только если не в режиме only_cache (там нет вызовов SploitScan)
         if not only_cache:
             print(f"\n🧹 Очистка старых логов...")
             cleanup_logs(output_dir)
