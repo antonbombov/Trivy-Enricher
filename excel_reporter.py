@@ -50,10 +50,16 @@ PTAI_COLUMN_HEADERS = [
 ]
 
 
-def generate_excel_report(enriched_trivy_path, output_dir, ptai_html_path=None):
+def generate_excel_report(enriched_trivy_path, output_dir, ptai_html_path=None, only_cache=False):
     """
     Основной метод генерации Excel отчета
     Создает Excel файл с листами SCA Анализ и (опционально) PTAI Анализ
+
+    Args:
+        enriched_trivy_path: путь к обогащенному JSON
+        output_dir: директория для сохранения
+        ptai_html_path: путь к PTAI отчету (опционально)
+        only_cache: флаг режима only-cache для формирования имени файла
     """
     try:
         # Создаем новую рабочую книгу
@@ -91,7 +97,10 @@ def generate_excel_report(enriched_trivy_path, output_dir, ptai_html_path=None):
 
         # Формируем имя выходного файла
         base_name = Path(enriched_trivy_path).stem.replace('_enriched', '').replace('_only_cache', '')
-        output_path = output_dir / f"{base_name}_report.xlsx"
+        if only_cache:
+            output_path = output_dir / f"{base_name}_only_cache_report.xlsx"
+        else:
+            output_path = output_dir / f"{base_name}_report.xlsx"
 
         # Сохраняем файл
         try:

@@ -72,7 +72,7 @@ def generate_html_report(enriched_file, output_dir, cache_dir):
     return html_file
 
 
-def generate_excel(enriched_file, output_dir, config):
+def generate_excel(enriched_file, output_dir, config, only_cache=False):
     """
     Генерирует Excel отчет с возможным добавлением PTAI листа
     """
@@ -89,7 +89,8 @@ def generate_excel(enriched_file, output_dir, config):
     excel_file = generate_excel_report(
         enriched_file,
         output_dir,
-        ptai_report
+        ptai_report,
+        only_cache
     )
     excel_time = time.time() - excel_start_time
 
@@ -155,7 +156,7 @@ def process_reports(trivy_files, args, config, output_dir, cache_dir):
 
         # Excel отчет по запросу
         if generate_excel_flag:
-            if generate_excel(report_file, output_dir, config):
+            if generate_excel(report_file, output_dir, config, only_cache):
                 excel_count += 1
 
     return processed_count, html_count, excel_count
