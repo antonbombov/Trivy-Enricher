@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 from enrichment_core import enrich_trivy_report
 from trivy_html_reporter import generate_trivy_html_report
-from excel_reporter import generate_excel_report
+from excel_reporter import generate_excel_report, generate_ptai_only_reports_for_all
 from config_manager import load_config, setup_directories, find_ptai_report_for_trivy
 from cache_cleaner import cleanup_old_cache, get_cache_stats
 from cdn_cache_manager import get_cdn_cache_stats
@@ -107,7 +107,7 @@ def process_reports(trivy_files, args, config, output_dir, cache_dir):
     """
     Обрабатывает найденные отчеты согласно аргументам
     """
-    generate_html, generate_excel_flag, skip_enrich, only_cache = get_report_types(args)
+    generate_html, generate_excel_flag, skip_enrich, only_cache, ptai_only = get_report_types(args)
     processed_count = 0
     html_count = 0
     excel_count = 0
@@ -170,7 +170,7 @@ def main():
 
     # Парсим аргументы командной строки
     args = parse_arguments()
-    generate_html, generate_excel_flag, skip_enrich, only_cache = get_report_types(args)
+    generate_html, generate_excel_flag, skip_enrich, only_cache, ptai_only = get_report_types(args)
 
     # Загружаем конфигурацию
     config = load_config()
@@ -179,13 +179,34 @@ def main():
     print(f"\n📋 Режимы работы:")
     print(f"   HTML отчеты: {'✅ ВКЛЮЧЕНЫ' if generate_html else '❌ ОТКЛЮЧЕНЫ'}")
     print(f"   Excel отчеты: {'✅ ВКЛЮЧЕНЫ' if generate_excel_flag else '❌ ОТКЛЮЧЕНЫ'}")
-    if skip_enrich:
+
+    if ptai_only:
+        print(f"   📋 Режим PTAI-ONLY: только Excel отчеты из PTAI (без Trivy)")
+    elif skip_enrich:
         print(f"   ⚡ Обогащение SploitScan: ОТКЛЮЧЕНО (используются исходные отчеты)")
     elif only_cache:
         print(f"   💾 Обогащение SploitScan: ТОЛЬКО КЭШ (без вызова SploitScan)")
     else:
         print(f"   🔄 Обогащение SploitScan: ВКЛЮЧЕНО (с вызовом SploitScan)")
+
     print("=" * 70)
+
+    # Режим PTAI-ONLY: обрабатываем только PTAI отчеты
+    if ptai_only:
+        print(f"\n📁 Директории:")
+        print(f"   📂 Входные PTAI отчеты: {scan_dir / 'PTAI'}")
+        print(f"   📄 Результаты: {output_dir}")
+
+        processed, success = generate_ptai_only_reports_for_all(config, output_dir)
+
+        print(f"\n{'=' * 70}")
+        print("ИТОГОВАЯ СТАТИСТИКА")
+        print(f"{'=' * 70}")
+        print(f"✅ Обработано PTAI отчетов: {processed}")
+        print(f"📈 Создано Excel отчетов: {success}")
+        print(f"{'=' * 70}")
+        print("\n✨ VIBECHECKER завершил работу ✨")
+        return
 
     # Показываем статистику кэша (только если нужно обогащение или только кэш)
     if not skip_enrich:

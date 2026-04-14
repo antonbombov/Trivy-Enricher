@@ -695,5 +695,209 @@ def main():
         generate_excel_report(enriched_file, script_dir, ptai_report)
 
 
+def generate_ptai_only_excel_report(ptai_html_path, output_dir):
+    """
+    Генерирует Excel отчет только с PTAI анализом (без SCA листа)
+
+    Args:
+        ptai_html_path: Путь к PTAI HTML отчету
+        output_dir: Директория для сохранения результата
+
+    Returns:
+        Path к созданному Excel файлу или None
+    """
+    try:
+        ptai_path = Path(ptai_html_path)
+
+        if not ptai_path.exists():
+            print(f"   ❌ PTAI файл не существует: {ptai_path}")
+            return None
+
+        # Подготавливаем данные из PTAI отчета
+        data, project_name = prepare_ptai_excel_data(ptai_path, debug=False)
+
+        if not data:
+            print(f"   ⚠️ Нет данных для PTAI листа в файле: {ptai_path.name}")
+            return None
+
+        # Создаем новую рабочую книгу
+        wb = openpyxl.Workbook()
+
+        # Удаляем дефолтный лист
+        if 'Sheet' in wb.sheetnames:
+            wb.remove(wb['Sheet'])
+
+        # Создаем лист с PTAI анализом
+        ws = wb.create_sheet("PTAI Анализ", 0)
+
+        # Добавляем информационный блок
+        current_date = datetime.now()
+
+        # Наименование проверяемого объекта
+        cell = ws.cell(row=1, column=1, value=f"Объект проверки: {project_name}")
+        cell.font = INFO_FONT
+        cell.alignment = Alignment(horizontal='left', vertical='center')
+
+        # Дата построения отчета
+        cell = ws.cell(row=2, column=1, value=f"Дата построения отчета: {current_date.strftime('%d.%m.%Y')}")
+        cell.font = INFO_FONT
+        cell.alignment = Alignment(horizontal='left', vertical='center')
+
+        # Источник данных
+        cell = ws.cell(row=3, column=1, value=f"Источник: {ptai_path.name}")
+        cell.font = INFO_FONT
+        cell.alignment = Alignment(horizontal='left', vertical='center')
+
+        # Пустая строка перед заголовками
+        ws.row_dimensions[4].height = 10
+
+        # Заголовки (используем те же, что и в add_ptai_sheet)
+        from excel_styles import HEADER_FONT, HEADER_FILL, CELL_BORDER
+
+        for col, header in enumerate(PTAI_COLUMN_HEADERS, 1):
+            cell = ws.cell(row=5, column=col, value=header)
+            cell.font = HEADER_FONT
+            cell.fill = HEADER_FILL
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            cell.border = CELL_BORDER
+
+        # Данные
+        for row, item in enumerate(data, 6):
+            # Номер строки
+            cell_num = ws.cell(row=row, column=1, value=row - 5)
+            cell_num.border = CELL_BORDER
+            cell_num.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+            # ID уязвимости
+            cell = ws.cell(row=row, column=2, value=item['ID уязвимости'])
+            cell.border = CELL_BORDER
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+            # Тип уязвимости
+            cell = ws.cell(row=row, column=3, value=item['Тип уязвимости'])
+            cell.border = CELL_BORDER
+            cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+
+            # Класс и метод / Уязвимый файл
+            cell = ws.cell(row=row, column=4, value=item['Класс и метод / Уязвимый файл'])
+            cell.border = CELL_BORDER
+            cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+
+            # Комментарий
+            cell = ws.cell(row=row, column=5, value=item['Комментарий'])
+            cell.border = CELL_BORDER
+            cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+
+            # Статус
+            status_value = item['Статус']
+            cell = ws.cell(row=row, column=6, value=status_value)
+            cell.border = CELL_BORDER
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+            # CWSS
+            cwss_value = item['CWSS']
+            if status_value.lower() == 'опровергнута' and not cwss_value:
+                cwss_value = '—'
+            cell = ws.cell(row=row, column=7, value=cwss_value)
+            cell.border = CELL_BORDER
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+            # Дата устранения - формула на основе CWSS (колонка G)
+            cell = ws.cell(row=row, column=8)
+            formula = f'''=IF(OR(ISBLANK(G{row}), NOT(ISNUMBER(G{row}))), "",
+                IF(LOWER(F{row})="опровергнута", "—",
+                    IF(G{row}>=75, "Устранение в текущем релизе / выпуск fix-патча",
+                        IF(G{row}>=30, "Планирование исправления в ближайших релизах / устранение в очередном патче",
+                            IF(G{row}>=10, "Рекомендуется устранить в будущих релизах", "")
+                        )
+                    )
+                )
+            )'''
+            cell.value = formula
+            cell.border = CELL_BORDER
+            cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+
+            # Компенсирующие меры
+            measures_value = item['Компенсирующие меры']
+            if status_value.lower() == 'опровергнута' and not measures_value:
+                measures_value = '—'
+            cell = ws.cell(row=row, column=9, value=measures_value)
+            cell.border = CELL_BORDER
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+        # Настраиваем ширину колонок
+        set_ptai_column_widths(ws)
+
+        # Добавляем фильтры
+        if data:
+            ws.auto_filter.ref = f"A5:I{len(data) + 5}"
+
+        # Замораживаем строку с заголовками
+        ws.freeze_panes = 'A6'
+
+        # Определяем путь для сохранения
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Формируем имя выходного файла
+        output_path = output_dir / f"{ptai_path.stem}_ptai.xlsx"
+
+        # Сохраняем файл
+        wb.save(output_path)
+        print(f"   ✅ Excel файл (PTAI only) сохранен: {output_path}")
+        print(f"   📊 Добавлено {len(data)} записей в лист PTAI Анализ")
+
+        return output_path
+
+    except Exception as e:
+        import traceback
+        print(f"❌ ОШИБКА генерации PTAI-only Excel отчета: {e}")
+        traceback.print_exc()
+        return None
+
+
+def generate_ptai_only_reports_for_all(config, output_dir):
+    """
+    Генерирует PTAI-only Excel отчеты для всех HTML файлов в папке PTAI
+
+    Args:
+        config: Словарь конфигурации
+        output_dir: Директория для сохранения результатов
+
+    Returns:
+        Tuple[processed_count, success_count]
+    """
+    from config_manager import get_ptai_reports_path
+
+    ptai_dir = get_ptai_reports_path(config)
+
+    if not ptai_dir:
+        print(f"\n❌ Папка PTAI не найдена в {config['scan_directory']}/PTAI")
+        return 0, 0
+
+    ptai_files = list(ptai_dir.glob("*.html"))
+
+    if not ptai_files:
+        print(f"\n❌ В папке {ptai_dir} нет HTML файлов")
+        return 0, 0
+
+    print(f"\n📄 Найдено PTAI отчетов: {len(ptai_files)}")
+
+    processed = 0
+    success = 0
+
+    for ptai_file in ptai_files:
+        print(f"\n{'=' * 60}")
+        print(f"ОБРАБОТКА PTAI: {ptai_file.name}")
+        print(f"{'=' * 60}")
+
+        result = generate_ptai_only_excel_report(ptai_file, output_dir)
+        processed += 1
+        if result:
+            success += 1
+
+    return processed, success
+
+
 if __name__ == "__main__":
     main()
