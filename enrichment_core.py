@@ -10,10 +10,11 @@ from sploitscan_parser import parse_sploitscan_data
 from parallel_processor import process_single_cve, calculate_optimal_workers
 
 
-def enrich_trivy_report(trivy_report_path, output_dir):
+def enrich_trivy_report(trivy_report_path, output_dir, only_cache=False):
     """
     Обогащает отчет Trivy с параллельной обработкой и кэшированием
     output_dir — путь к папке для сохранения итоговых отчетов
+    only_cache — если True, использовать только данные из кэша, не вызывать SploitScan
     """
     # Загружаем конфиг из config.json
     config = load_config()
@@ -33,8 +34,11 @@ def enrich_trivy_report(trivy_report_path, output_dir):
         cve_list = extract_cves_from_trivy(trivy_report_path)
         total_cves = len(cve_list)
 
-        # АВТОМАТИЧЕСКИЙ РАСЧЕТ WORKERS С УЧЕТОМ КОНФИГА
-        max_workers = calculate_optimal_workers(total_cves, max_workers_config)
+        # Определяем суффикс для выходного файла
+        if only_cache:
+            output_suffix = "_only_cache.json"
+        else:
+            output_suffix = "_enriched.json"
 
         # ПРОВЕРЯЕМ КЭШ ПЕРЕД ОБРАБОТКОЙ
         cached_cves = []
@@ -48,17 +52,26 @@ def enrich_trivy_report(trivy_report_path, output_dir):
         print(f"Найдено {total_cves} CVE")
         print(f"  [CACHE] В кэше: {len(cached_cves)} CVE")
         print(f"  [SCAN]  Требуют сканирования: {len(uncached_cves)} CVE")
+
+        if only_cache:
+            print(f"  [ONLY-CACHE] Режим: несканированные CVE будут пропущены (без обогащения)")
+
         print(f"Кэш sploitscan: {cache_dir}")
         print(f"Результаты сохраняются в: {output_dir}")
-        print(f"Параллельных workers: {max_workers}")
-        print(f"Процессоров в системе: {os.cpu_count()}")
-        print(f"Макс. workers из конфига: {max_workers_config}")
+
+        if not only_cache:
+            # АВТОМАТИЧЕСКИЙ РАСЧЕТ WORKERS С УЧЕТОМ КОНФИГА
+            max_workers = calculate_optimal_workers(total_cves, max_workers_config)
+            print(f"Параллельных workers: {max_workers}")
+            print(f"Процессоров в системе: {os.cpu_count()}")
+            print(f"Макс. workers из конфига: {max_workers_config}")
+
         print("=" * 60)
 
         # ПАРАЛЛЕЛЬНАЯ ОБРАБОТКА С КЭШИРОВАНИЕМ
         sploitscan_results = {}
         failed_cves = set()
-        stats = {'cached': len(cached_cves), 'success': 0, 'failed': 0, 'retry_success': 0}
+        stats = {'cached': len(cached_cves), 'success': 0, 'failed': 0, 'retry_success': 0, 'skipped': 0}
 
         # Сначала добавляем закэшированные CVE
         for cve_id in cached_cves:
@@ -69,63 +82,79 @@ def enrich_trivy_report(trivy_report_path, output_dir):
 
         # Обрабатываем только те CVE, которых нет в кэше
         if uncached_cves:
-            # Первая попытка
-            print(f"\n[SCAN] Сканирование {len(uncached_cves)} CVE...")
-            with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                tasks = [(cve_id, cache_dir, 1) for cve_id in uncached_cves]
-                future_to_cve = {executor.submit(process_single_cve, task): task for task in tasks}
-                completed = 0
-                for future in as_completed(future_to_cve):
-                    cve_id, result = future.result()
-                    completed += 1
-                    if result['status'] == 'success':
-                        sploitscan_results[cve_id] = result['data']
-                        stats['success'] += 1
-                        print(f"[{completed}/{len(uncached_cves)}] {cve_id} УСПЕХ ({result['execution_time']:.1f}с)")
-                    elif result['status'] == 'cached':
-                        sploitscan_results[cve_id] = result['data']
-                        stats['cached'] += 1
-                        print(
-                            f"[{completed}/{len(uncached_cves)}] {cve_id} УСПЕХ КЭШ ({result['execution_time']:.1f}с)")
-                    else:
-                        failed_cves.add(cve_id)
-                        stats['failed'] += 1
-                        print(f"[{completed}/{len(uncached_cves)}] {cve_id} ОШИБКА ({result['execution_time']:.1f}с)")
-
-            # Вторая попытка для неудавшихся CVE
-            if failed_cves:
-                print(f"\n[RETRY] Повторная попытка для {len(failed_cves)} CVE...")
-                retry_cves = list(failed_cves)
+            if only_cache:
+                # Режим ONLY CACHE: пропускаем все некешированные CVE
+                stats['skipped'] = len(uncached_cves)
+                print(f"\n[ONLY-CACHE] Пропущено {len(uncached_cves)} CVE (не найдены в кэше):")
+                for cve_id in uncached_cves:
+                    print(f"  - {cve_id}")
+                # Не добавляем ничего в sploitscan_results для пропущенных CVE
+            else:
+                # Первая попытка
+                print(f"\n[SCAN] Сканирование {len(uncached_cves)} CVE...")
                 with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                    tasks = [(cve_id, cache_dir, 2) for cve_id in retry_cves]
+                    tasks = [(cve_id, cache_dir, 1) for cve_id in uncached_cves]
                     future_to_cve = {executor.submit(process_single_cve, task): task for task in tasks}
-                    completed_retry = 0
+                    completed = 0
                     for future in as_completed(future_to_cve):
                         cve_id, result = future.result()
-                        completed_retry += 1
+                        completed += 1
                         if result['status'] == 'success':
                             sploitscan_results[cve_id] = result['data']
-                            failed_cves.remove(cve_id)
-                            stats['retry_success'] += 1
+                            stats['success'] += 1
                             print(
-                                f"[{completed_retry}/{len(retry_cves)}] {cve_id} УСПЕХ ПОВТОР ({result['execution_time']:.1f}с)")
+                                f"[{completed}/{len(uncached_cves)}] {cve_id} УСПЕХ ({result['execution_time']:.1f}с)")
+                        elif result['status'] == 'cached':
+                            sploitscan_results[cve_id] = result['data']
+                            stats['cached'] += 1
+                            print(
+                                f"[{completed}/{len(uncached_cves)}] {cve_id} УСПЕХ КЭШ ({result['execution_time']:.1f}с)")
                         else:
+                            failed_cves.add(cve_id)
+                            stats['failed'] += 1
                             print(
-                                f"[{completed_retry}/{len(retry_cves)}] {cve_id} ОШИБКА ПОВТОР ({result['execution_time']:.1f}с)")
+                                f"[{completed}/{len(uncached_cves)}] {cve_id} ОШИБКА ({result['execution_time']:.1f}с)")
+
+                # Вторая попытка для неудавшихся CVE
+                if failed_cves:
+                    print(f"\n[RETRY] Повторная попытка для {len(failed_cves)} CVE...")
+                    retry_cves = list(failed_cves)
+                    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                        tasks = [(cve_id, cache_dir, 2) for cve_id in retry_cves]
+                        future_to_cve = {executor.submit(process_single_cve, task): task for task in tasks}
+                        completed_retry = 0
+                        for future in as_completed(future_to_cve):
+                            cve_id, result = future.result()
+                            completed_retry += 1
+                            if result['status'] == 'success':
+                                sploitscan_results[cve_id] = result['data']
+                                failed_cves.remove(cve_id)
+                                stats['retry_success'] += 1
+                                print(
+                                    f"[{completed_retry}/{len(retry_cves)}] {cve_id} УСПЕХ ПОВТОР ({result['execution_time']:.1f}с)")
+                            else:
+                                print(
+                                    f"[{completed_retry}/{len(retry_cves)}] {cve_id} ОШИБКА ПОВТОР ({result['execution_time']:.1f}с)")
 
         print("=" * 60)
         print("СТАТИСТИКА ОБРАБОТКИ:")
         print(f"  Из кэша:               {stats['cached']}")
-        print(f"  Успешно с первой попытки: {stats['success']}")
-        print(f"  Успешно после повтора:    {stats['retry_success']}")
-        print(f"  Всего успешно:           {stats['cached'] + stats['success'] + stats['retry_success']}/{total_cves}")
-        print(f"  Осталось ошибок:         {len(failed_cves)}")
+        if not only_cache:
+            print(f"  Успешно с первой попытки: {stats['success']}")
+            print(f"  Успешно после повтора:    {stats['retry_success']}")
+            print(
+                f"  Всего успешно:           {stats['cached'] + stats['success'] + stats['retry_success']}/{total_cves}")
+            print(f"  Осталось ошибок:         {len(failed_cves)}")
+        else:
+            print(f"  Пропущено (нет в кэше):  {stats['skipped']}")
+            print(f"  Всего обработано:        {stats['cached']}/{total_cves}")
 
-        # Добавляем значения по умолчанию для оставшихся ошибок
-        for cve_id in failed_cves:
-            sploitscan_results[cve_id] = {
-                "error": "Не удалось получить данные после 2 попыток"
-            }
+        # Добавляем заглушки только для failed CVE (только в обычном режиме)
+        if not only_cache:
+            for cve_id in failed_cves:
+                sploitscan_results[cve_id] = {
+                    "error": "Не удалось получить данные после 2 попыток"
+                }
 
         # Обогащаем отчет
         enriched_count = 0
@@ -139,7 +168,7 @@ def enrich_trivy_report(trivy_report_path, output_dir):
                             enriched_count += 1
 
         # Сохраняем обогащенный отчет в output_directory
-        output_path = output_dir / f"{trivy_report_path.stem}_enriched.json"
+        output_path = output_dir / f"{trivy_report_path.stem}{output_suffix}"
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(trivy_data, f, indent=2, ensure_ascii=False)
 

@@ -107,7 +107,7 @@ def process_reports(trivy_files, args, config, output_dir, cache_dir):
     """
     Обрабатывает найденные отчеты согласно аргументам
     """
-    generate_html, generate_excel_flag, skip_enrich = get_report_types(args)
+    generate_html, generate_excel_flag, skip_enrich, only_cache = get_report_types(args)
     processed_count = 0
     html_count = 0
     excel_count = 0
@@ -121,10 +121,22 @@ def process_reports(trivy_files, args, config, output_dir, cache_dir):
         if skip_enrich:
             print("⚡ Режим: БЕЗ обогащения SploitScan (используется исходный отчет)")
             report_file = trivy_file
+        elif only_cache:
+            print("💾 Режим: ТОЛЬКО КЭШ (используются только закэшированные CVE)")
+            start_time = time.time()
+            report_file = enrich_trivy_report(trivy_file, output_dir, only_cache=True)
+            total_time = time.time() - start_time
+
+            if not report_file:
+                print(f"❌ ОШИБКА обогащения отчета {trivy_file.name}")
+                continue
+
+            print(f"✅ Обогащение из кэша выполнено за {total_time:.1f}с")
+            print(f"📄 Обогащенный JSON (только кэш): {report_file.name}")
         else:
             print("🔄 Режим: С обогащением SploitScan")
             start_time = time.time()
-            report_file = enrich_trivy_report(trivy_file, output_dir)
+            report_file = enrich_trivy_report(trivy_file, output_dir, only_cache=False)
             total_time = time.time() - start_time
 
             if not report_file:
@@ -158,7 +170,7 @@ def main():
 
     # Парсим аргументы командной строки
     args = parse_arguments()
-    generate_html, generate_excel_flag, skip_enrich = get_report_types(args)
+    generate_html, generate_excel_flag, skip_enrich, only_cache = get_report_types(args)
 
     # Загружаем конфигурацию
     config = load_config()
@@ -169,11 +181,13 @@ def main():
     print(f"   Excel отчеты: {'✅ ВКЛЮЧЕНЫ' if generate_excel_flag else '❌ ОТКЛЮЧЕНЫ'}")
     if skip_enrich:
         print(f"   ⚡ Обогащение SploitScan: ОТКЛЮЧЕНО (используются исходные отчеты)")
+    elif only_cache:
+        print(f"   💾 Обогащение SploitScan: ТОЛЬКО КЭШ (без вызова SploitScan)")
     else:
-        print(f"   🔄 Обогащение SploitScan: ВКЛЮЧЕНО")
+        print(f"   🔄 Обогащение SploitScan: ВКЛЮЧЕНО (с вызовом SploitScan)")
     print("=" * 70)
 
-    # Показываем статистику кэша (только если нужно обогащение)
+    # Показываем статистику кэша (только если нужно обогащение или только кэш)
     if not skip_enrich:
         sploitscan_stats = get_cache_stats()
         print(f"\n📊 Статистика кэша:")
@@ -186,13 +200,18 @@ def main():
         else:
             print(f"   CDN: пуст (будет загружен при первом отчете)")
 
+        # Очистка кэша нужна только если мы не в режиме only_cache (или если только_cache, но всё равно можно очистить)
         deleted_count = cleanup_old_cache()
         if deleted_count > 0:
             print(f"   🧹 Удалено старых файлов из кэша: {deleted_count}")
 
-        print(f"\n🧹 Очистка старых логов...")
-        cleanup_logs(output_dir)
-        print("   Очистка логов завершена")
+        # Очищаем логи только если не в режиме only_cache (там нет вызовов SploitScan)
+        if not only_cache:
+            print(f"\n🧹 Очистка старых логов...")
+            cleanup_logs(output_dir)
+            print("   Очистка логов завершена")
+        else:
+            print(f"\n💾 Режим only-cache: очистка логов пропущена (вызовы SploitScan не производятся)")
 
     print(f"\n📁 Директории:")
     print(f"   📂 Входные отчеты: {scan_dir}")
@@ -200,16 +219,17 @@ def main():
         print(f"   💾 Кэш SploitScan: {cache_dir}")
         print(f"   🌐 Кэш CDN: {cache_dir / 'cdn'}")
     print(f"   📄 Результаты: {output_dir}")
-    if not skip_enrich:
+    if not skip_enrich and not only_cache:
         print(f"   📋 Логи SploitScan: {output_dir / 'logs'}")
 
     # Ищем отчеты в указанной папке scan_dir
     trivy_files = list(scan_dir.glob("*.json"))
 
-    # Исключаем config.json и уже обогащенные отчеты
+    # Исключаем config.json и уже обогащенные отчеты (включая _only_cache)
     trivy_files = [
         f for f in trivy_files
         if not f.name.endswith('_enriched.json')
+           and not f.name.endswith('_only_cache.json')
            and f.name != 'config.json'
     ]
 
