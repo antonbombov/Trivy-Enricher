@@ -45,7 +45,7 @@ PTAI_COLUMN_HEADERS = [
     'Комментарий',
     'Статус',
     'CWSS',
-    'Дата устранения',
+    'Срок устранения',
     'Компенсирующие меры'
 ]
 
@@ -409,15 +409,17 @@ def add_ptai_sheet(workbook, html_file_path):
         # Если статус "Опровергнута" -> прочерк
         # Если CWSS пусто или не число -> пустая строка
 
+        # Срок устранения - формула на основе CWSS (колонка G)
+        cell = ws.cell(row=row, column=8)
         formula = f'''=IF(OR(ISBLANK(G{row}), NOT(ISNUMBER(G{row}))), "",
-            IF(LOWER(F{row})="опровергнута", "—",
-                IF(G{row}>=75, "Устранение в текущем релизе / выпуск fix-патча",
-                    IF(G{row}>=30, "Планирование исправления в ближайших релизах / устранение в очередном патче",
-                        IF(G{row}>=10, "Рекомендуется устранить в будущих релизах", "")
+                    IF(LOWER(F{row})="опровергнута", "—",
+                        IF(G{row}>=75, "Устранение в текущем релизе / выпуск fix-патча",
+                            IF(G{row}>=30, "Исправление в ближайших релизах / устранение в очередном патче",
+                                IF(G{row}>=10, "Рекомендуется устранить в будущих релизах", "")
+                            )
+                        )
                     )
-                )
-            )
-        )'''
+                )'''
         cell.value = formula
         cell.border = CELL_BORDER
         cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
@@ -802,12 +804,12 @@ def generate_ptai_only_excel_report(ptai_html_path, output_dir):
             cell.border = CELL_BORDER
             cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
-            # Дата устранения - формула на основе CWSS (колонка G)
+            # Срок устранения - формула на основе CWSS (колонка G)
             cell = ws.cell(row=row, column=8)
             formula = f'''=IF(OR(ISBLANK(G{row}), NOT(ISNUMBER(G{row}))), "",
                 IF(LOWER(F{row})="опровергнута", "—",
                     IF(G{row}>=75, "Устранение в текущем релизе / выпуск fix-патча",
-                        IF(G{row}>=30, "Планирование исправления в ближайших релизах / устранение в очередном патче",
+                        IF(G{row}>=30, "Исправление в ближайших релизах / устранение в очередном патче",
                             IF(G{row}>=10, "Рекомендуется устранить в будущих релизах", "")
                         )
                     )

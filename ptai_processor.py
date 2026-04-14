@@ -40,8 +40,10 @@ class PTAIParser:
             elif rejected:
                 status = 'Опровергнута'
                 rejected_count += 1
+                # Пропускаем опровергнутые уязвимости - не добавляем в отчет
+                continue
             else:
-                # Если нет иконки статуса, пропускаем (как в первой группе)
+                # Если нет иконки статуса, пропускаем
                 continue
 
             vuln = {
@@ -86,7 +88,7 @@ class PTAIParser:
 
         if self.debug:
             print(f"   [DEBUG] Найдено подтвержденных уязвимостей: {confirmed_count}")
-            print(f"   [DEBUG] Найдено опровергнутых уязвимостей: {rejected_count}")
+            print(f"   [DEBUG] Найдено опровергнутых уязвимостей: {rejected_count} (пропущены)")
 
         return vulns
 
