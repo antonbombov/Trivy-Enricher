@@ -20,6 +20,32 @@
 
 <sub><sup>***рекомендуется модифицированный [sploitscan](https://github.com/antonbombov/SploitScan) (v.0.14.3) - при отсутствии эксплойтов включает информационные ссылки</sub></sup>
 
+## Структура каталогов
+Перед запуском необходимо создать следующую структуру:  
+your_work_directory/  
+├── config.json # Файл конфигурации (обязательно)  
+├── reports/ # Папка с входными отчетами (scan_directory)  
+│ ├── report1.json # JSON отчет Trivy  
+│ ├── report2.json  
+│ └── PTAI/ # Подпапка для PTAI отчетов  
+│ ├── report1.html # HTML отчет PTAI (имя совпадает с Trivy)  
+│ └── report2.html  
+├── cache/ # Папка для кэша SploitScan  
+└── results/ # Папка для выходных отчетов  
+
+## Требования к отчетам
+
+### Trivy отчет (JSON)
+- Формат: UTF-8 (с BOM или без)  
+- Должен содержать поле `Results` с массивом уязвимостей  
+- Для отображения версии Trivy в HTML рекомендуется версия **0.69.0 или новее** (поле `Trivy.Version`)
+
+### PTAI отчет (HTML)
+- Формат: HTML, сгенерированный PTAI  
+- Должен содержать таблицы с классом vulnerability-root-table  
+- Имя файла должно точно совпадать с именем Trivy отчета (без расширения)  
+- Пример: если Trivy отчет scan.json, то PTAI отчет должен быть PTAI/scan.html  
+
 ## Установка
 1. Клонируйте репозиторий:
 ```bash
@@ -27,20 +53,52 @@ git clone <repository-url>
 cd cd trivy\Trivy-Enricher
 ```
 
-## 2. Подготовка PTAI отчета (опционально)
+2. Установите зависимости:
+```bash
+pip install -r requirements.txt 
+```
+
+3. Создайте файл config.json (см. пример ниже)
+```json
+{
+  "sploitscan_path": "путь_к_sploitscan.py",
+  "scan_directory": "путь_к_папке_с_отчетами",
+  "cache_directory": "путь_к_папке_кэша",
+  "output_directory": "путь_к_папке_результатов",
+  "cache_max_days": 30,
+  "max_workers": null,
+  "timeout": 60,
+  "project_version": "0.7.3",
+  "sploitscan_version": "0.14.3_enhanced"
+}
+```
+
+``sploitscan_path`` - 	Путь к SploitScan (файл .py или команда "sploitscan")
+``scan_directory``	Папка с входными JSON отчетами Trivy
+``cache_directory``	Папка для кэша результатов SploitScan
+``output_directory``	Папка для сохранения результатов (HTML, Excel)
+``cache_max_days``	Максимальный возраст файлов в кэше (дни)
+``max_workers``	Кол-во параллельных процессов (null = авто)
+``timeout``	Таймаут на выполнение SploitScan (сек)
+``project_version``	Версия проекта (отображается в HTML)
+``sploitscan_version``	Версия SploitScan (отображается в HTML)
+
+## Подготовка PTAI отчета (опционально)
 Для добавления листа PTAI Анализ в Excel отчет:
 1. Создайте подпапку `PTAI` внутри `scan_directory`
 2. Поместите HTML отчет PTAI в эту папку с **точным совпадением имени** с Trivy отчетом (например, `scan.json` и `PTAI/scan.html`)
 
-### 3. Запуск проекта
+### Запуск проекта
 
 #### Аргументы командной строки:
-| Аргумент | Описание |
-|----------|----------|
-| `-html` | Генерация HTML отчетов |
-| `-excel` | Генерация Excel отчетов |
-| `-skip-enrich` / `-se` | Пропустить обогащение SploitScan (использовать исходный Trivy JSON) |
-| `-h` | Показать справку |
+| Аргумент                 | Описание |
+|--------------------------|----------|
+| `-html`                  | Генерация HTML отчетов |
+| `-excel`                 | Генерация Excel отчетов |
+| `-h`                     | Показать справку |
+| `--skip-enrich` / `--se` | Пропустить обогащение SploitScan (использовать исходный Trivy JSON) |
+| `--only-cache` / `-oc`   | Использовать только кэшированные данные (без вызова SploitScan) |
+| `--ptai-only` / `--po`   | Генерировать только Excel отчет с PTAI анализом (без SCA) |
 
 **Примеры:**
 ```bash
@@ -54,10 +112,19 @@ python main.py -excel
 python main.py -html -excel
 
 # HTML отчет без обогащения (быстрая генерация)
-python main.py -html -skip-enrich
+python main.py -html --skip-enrich
+python main.py -html --se
+
+# Оба отчета только из кэша
+python main.py -html -excel --only-cache
+python main.py -html -excel --oc
+
+# Только Excel с PTAI (без Trivy SCA)
+python main.py -excel --ptai-only
+python main.py -excel --po
 
 # Оба отчета без обогащения
-python main.py -html -excel -skip-enrich
+python main.py -html -excel --skip-enrich
 ```
 Docker контейнер
 
@@ -125,30 +192,33 @@ docker run --rm -it -v "${PWD}/Scan:/scan/input" -v "${PWD}/Reports:/scan/result
 - Автоматический расчет срока устранения на основе severity и наличия эксплойтов
 
 **Лист "PTAI Анализ" (создается при наличии PTAI отчета):**
-- Подтвержденные и опровергнутые уязвимости из PTAI
-- Колонки: №, ID уязвимости, Тип уязвимости, Класс и метод / Уязвимый файл, Комментарий, Статус, CWSS / Vисп, Компенсирующие меры
-- Для опровергнутых уязвимостей в колонках CWSS и Компенсирующие меры ставится прочерк
+- Только подтвержденные уязвимости из PTAI
+- Колонки: №, ID уязвимости, Тип уязвимости, Класс и метод / Уязвимый файл, Комментарий, Статус, CWSS, Срок устранения, Компенсирующие меры
+- Формула для "Срок устранения" на основе CWSS:
+  - CWSS ≥ 75 → "Устранение в текущем релизе / выпуск fix-патча"
+  - CWSS ≥ 30 → "Исправление в ближайших релизах / устранение в очередном патче"
+  - CWSS ≥ 10 → "Рекомендуется устранить в будущих релизах"
 
 ### 6. Структура проекта
-vibechecker/
-├── main.py # Основной скрипт (точка входа)
-├── argument_parser.py # Парсинг аргументов командной строки
-├── config_manager.py # Управление конфигурацией
-├── enrichment_core.py # Ядро обогащения отчетов
-├── trivy_parser.py # Парсер отчетов Trivy
-├── sploitscan_runner.py # Запуск SploitScan
-├── sploitscan_parser.py # Парсер результатов SploitScan
-├── parallel_processor.py # Параллельная обработка
-├── trivy_html_reporter.py # Генератор HTML отчетов
-├── html_templates.py # HTML шаблоны
-├── excel_reporter.py # Генератор Excel отчетов (SCA + PTAI)
-├── ptai_processor.py # Парсер PTAI отчетов (lxml/XPath)
-├── excel_styles.py # Единые стили для Excel
-├── cdn_cache_manager.py # Кэширование Tailwind CSS
-├── cache_cleaner.py # Очистка устаревшего кэша
-├── config.json # Файл конфигурации
-├── requirements.txt # Зависимости Python
-└── README.md # Документация
+vibechecker/  
+├── main.py # Основной скрипт (точка входа)  
+├── argument_parser.py # Парсинг аргументов командной строки  
+├── config_manager.py # Управление конфигурацией  
+├── enrichment_core.py # Ядро обогащения отчетов  
+├── trivy_parser.py # Парсер отчетов Trivy  
+├── sploitscan_runner.py # Запуск SploitScan  
+├── sploitscan_parser.py # Парсер результатов SploitScan  
+├── parallel_processor.py # Параллельная обработка  
+├── trivy_html_reporter.py # Генератор HTML отчетов  
+├── html_templates.py # HTML шаблоны  
+├── excel_reporter.py # Генератор Excel отчетов (SCA + PTAI)  
+├── ptai_processor.py # Парсер PTAI отчетов (lxml/XPath)  
+├── excel_styles.py # Единые стили для Excel  
+├── cdn_cache_manager.py # Кэширование Tailwind CSS  
+├── cache_cleaner.py # Очистка устаревшего кэша  
+├── config.json # Файл конфигурации  
+├── requirements.txt # Зависимости Python  
+└── README.md # Документация  
 
 ### 7. 🔗 Ссылки
 - [SploitScan](https://github.com/xaitax/SploitScan) - инструмент для сбора информации об эксплойтах  
