@@ -130,25 +130,25 @@ docker run --rm -it -v "${PWD}/Scan:/scan/input" -v "${PWD}/Reports:/scan/result
 - Для опровергнутых уязвимостей в колонках CWSS и Компенсирующие меры ставится прочерк
 
 ### 6. Структура проекта
-vibechecker/
-├── main.py # Основной скрипт (точка входа)
-├── argument_parser.py # Парсинг аргументов командной строки
-├── config_manager.py # Управление конфигурацией
-├── enrichment_core.py # Ядро обогащения отчетов
-├── trivy_parser.py # Парсер отчетов Trivy
-├── sploitscan_runner.py # Запуск SploitScan
-├── sploitscan_parser.py # Парсер результатов SploitScan
-├── parallel_processor.py # Параллельная обработка
-├── trivy_html_reporter.py # Генератор HTML отчетов
-├── html_templates.py # HTML шаблоны
-├── excel_reporter.py # Генератор Excel отчетов (SCA + PTAI)
-├── ptai_processor.py # Парсер PTAI отчетов (lxml/XPath)
-├── excel_styles.py # Единые стили для Excel
-├── cdn_cache_manager.py # Кэширование Tailwind CSS
-├── cache_cleaner.py # Очистка устаревшего кэша
-├── config.json # Файл конфигурации
-├── requirements.txt # Зависимости Python
-└── README.md # Документация
+vibechecker/  
+├── main.py # Основной скрипт (точка входа)  
+├── argument_parser.py # Парсинг аргументов командной строки  
+├── config_manager.py # Управление конфигурацией  
+├── enrichment_core.py # Ядро обогащения отчетов  
+├── trivy_parser.py # Парсер отчетов Trivy  
+├── sploitscan_runner.py # Запуск SploitScan  
+├── sploitscan_parser.py # Парсер результатов SploitScan  
+├── parallel_processor.py # Параллельная обработка  
+├── trivy_html_reporter.py # Генератор HTML отчетов  
+├── html_templates.py # HTML шаблоны  
+├── excel_reporter.py # Генератор Excel отчетов (SCA + PTAI)  
+├── ptai_processor.py # Парсер PTAI отчетов (lxml/XPath)  
+├── excel_styles.py # Единые стили для Excel  
+├── cdn_cache_manager.py # Кэширование Tailwind CSS  
+├── cache_cleaner.py # Очистка устаревшего кэша  
+├── config.json # Файл конфигурации  
+├── requirements.txt # Зависимости Python  
+└── README.md # Документация  
 
 ### 7. 🔗 Ссылки
 - [SploitScan](https://github.com/xaitax/SploitScan) - инструмент для сбора информации об эксплойтах  
