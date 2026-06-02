@@ -2,7 +2,6 @@
 import json
 from pathlib import Path
 from datetime import datetime
-from dateutil.relativedelta import relativedelta
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
@@ -48,6 +47,36 @@ PTAI_COLUMN_HEADERS = [
     'Срок устранения',
     'Компенсирующие меры'
 ]
+
+
+def get_remediation_period(severity, has_exploits):
+    """
+    Возвращает срок устранения в виде текстового периода (без привязки к дате)
+
+    Args:
+        severity: уровень критичности (CRITICAL, HIGH, MEDIUM, LOW, UNKNOWN)
+        has_exploits: наличие публичных эксплойтов
+
+    Returns:
+        str: строка вида "6 месяцев", "3 месяца" и т.д.
+    """
+    if severity == 'CRITICAL':
+        months = 6
+    elif severity == 'HIGH':
+        months = 9
+    else:  # MEDIUM, LOW, UNKNOWN
+        months = 12
+
+    if has_exploits:
+        months = max(1, months - 3)
+
+    # Склонение слова "месяц"
+    if months == 1:
+        return "1 месяц"
+    elif months in [2, 3, 4]:
+        return f"{months} месяца"
+    else:
+        return f"{months} месяцев"
 
 
 def generate_excel_report(enriched_trivy_path, output_dir, ptai_html_path=None, only_cache=False):
@@ -398,7 +427,7 @@ def group_vulnerabilities_by_artifact(vulnerabilities):
         'vulnerability_ids': set(),
         'severities': [],
         'severity_levels': [],
-        'remediation_dates': [],
+        'remediation_periods': [],  # изменено с remediation_dates
         'statuses': set(),
         'comments': set(),
         'source': None,
@@ -428,12 +457,9 @@ def group_vulnerabilities_by_artifact(vulnerabilities):
         group['severities'].append(severity)
         group['severity_levels'].append((severity_order.get(severity, 0), severity))
 
-        # Сроки устранения с их приоритетом
-        try:
-            rem_date = datetime.strptime(vuln['remediation_date'], '%d.%m.%Y')
-            group['remediation_dates'].append((severity_order.get(severity, 0), rem_date, vuln['remediation_date']))
-        except:
-            group['remediation_dates'].append((severity_order.get(severity, 0), None, vuln['remediation_date']))
+        # Периоды устранения с их приоритетом (изменено)
+        remediation_period = vuln['remediation_period']
+        group['remediation_periods'].append((severity_order.get(severity, 0), remediation_period))
 
         # Статус и комментарий
         if vuln.get('status'):
@@ -456,11 +482,11 @@ def group_vulnerabilities_by_artifact(vulnerabilities):
                 unique_severities.append(sev)
         severity_str = '\n'.join(unique_severities)
 
-        # Выбираем срок устранения: берем дату для наивысшего уровня критичности
-        remediation_date = ''
-        if group['remediation_dates']:
-            sorted_dates = sorted(group['remediation_dates'], key=lambda x: x[0], reverse=True)
-            remediation_date = sorted_dates[0][2]
+        # Выбираем период устранения: берем период для наивысшего уровня критичности
+        remediation_period = ''
+        if group['remediation_periods']:
+            sorted_periods = sorted(group['remediation_periods'], key=lambda x: x[0], reverse=True)
+            remediation_period = sorted_periods[0][1]
 
         # Статус и комментарий
         status_str = '\n'.join(sorted(group['statuses'])) if group['statuses'] else ''
@@ -473,7 +499,7 @@ def group_vulnerabilities_by_artifact(vulnerabilities):
             'version': group['version'],
             'vulnerability_id': vuln_ids_str,
             'severity': severity_str,
-            'remediation_date': remediation_date,
+            'remediation_period': remediation_period,  # изменено с remediation_date
             'status': status_str,
             'comment': comment_str
         })
@@ -552,8 +578,8 @@ def add_sca_sheet(workbook, enriched_trivy_path):
         cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True, text_rotation=0)
         ws.row_dimensions[row_num].height = None
 
-        # Срок устранения (от наивысшего уровня критичности)
-        cell = ws.cell(row=row_num, column=8, value=vuln['remediation_date'])
+        # Срок устранения (период от наивысшего уровня критичности) - изменено
+        cell = ws.cell(row=row_num, column=8, value=vuln['remediation_period'])
         cell.border = CELL_BORDER
         cell.alignment = Alignment(horizontal='center', vertical='center')
 
@@ -591,7 +617,6 @@ def collect_all_vulnerabilities(trivy_data):
     Собирает ВСЕ вхождения уязвимостей БЕЗ какой-либо дедупликации
     """
     all_vulns = []
-    current_date = datetime.now()
 
     if 'Results' in trivy_data:
         for result in trivy_data['Results']:
@@ -627,8 +652,8 @@ def collect_all_vulnerabilities(trivy_data):
                     # Получаем severity
                     severity = vuln.get('Severity', 'UNKNOWN')
 
-                    # Рассчитываем срок устранения
-                    remediation_date = calculate_remediation_date(current_date, severity, has_exploits)
+                    # Получаем период устранения (вместо расчета даты)
+                    remediation_period = get_remediation_period(severity, has_exploits)
 
                     all_vulns.append({
                         'source': source_value,
@@ -637,7 +662,7 @@ def collect_all_vulnerabilities(trivy_data):
                         'version': vuln.get('InstalledVersion', 'Unknown'),
                         'vulnerability_id': vuln['VulnerabilityID'],
                         'severity': severity,
-                        'remediation_date': remediation_date,
+                        'remediation_period': remediation_period,  # изменено
                         'status': '',
                         'comment': ''
                     })
@@ -701,24 +726,6 @@ def has_any_exploits(sploitscan):
                     return True
 
     return False
-
-
-def calculate_remediation_date(base_date, severity, has_exploits):
-    """
-    Рассчитывает срок устранения уязвимости
-    """
-    if severity == 'CRITICAL':
-        months = 6
-    elif severity == 'HIGH':
-        months = 9
-    else:  # MEDIUM, LOW, UNKNOWN
-        months = 12
-
-    if has_exploits:
-        months = max(1, months - 3)
-
-    remediation_date = base_date + relativedelta(months=months)
-    return remediation_date.strftime('%d.%m.%Y')
 
 
 def get_artifact_name(report_filename):
