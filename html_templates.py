@@ -590,9 +590,12 @@ def get_javascript():
             visible = false;
           }
 
-          // EPSS filter
-          if (visible && cardEpss < epssMin) {
-            visible = false;
+          // EPSS filter (>=)
+          if (visible && epssMin > 0) {
+            const EPSILON = 1e-10;
+            if (cardEpss + EPSILON < epssMin) {
+                visible = false;
+            }
           }
 
           // CISA KEV filter
