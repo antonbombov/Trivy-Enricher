@@ -26,7 +26,7 @@ RUN echo '{ \
   "cache_max_days": 30, \
   "max_workers": null, \
   "timeout": 90, \
-  "project_version": "0.7.3", \
+  "project_version": "0.7.3.1", \
   "sploitscan_version": "0.14.3_enhanced" \
 }' > /app/config.json
 
