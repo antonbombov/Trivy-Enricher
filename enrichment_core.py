@@ -169,7 +169,7 @@ def enrich_trivy_report(trivy_report_path, output_dir, only_cache=False):
 
         # Сохраняем обогащенный отчет в output_directory
         output_path = output_dir / f"{trivy_report_path.stem}{output_suffix}"
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(output_path, 'w', encoding='utf-8-sig') as f:
             json.dump(trivy_data, f, indent=2, ensure_ascii=False)
 
         # Показываем созданные файлы

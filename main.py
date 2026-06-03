@@ -248,9 +248,7 @@ def main():
     # Исключаем config.json и уже обогащенные отчеты (включая _only_cache)
     trivy_files = [
         f for f in trivy_files
-        if not f.name.endswith('_enriched.json')
-           and not f.name.endswith('_only_cache.json')
-           and f.name != 'config.json'
+        if f.name != 'config.json'
     ]
 
     if not trivy_files:
