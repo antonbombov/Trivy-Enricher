@@ -49,6 +49,14 @@ def generate_trivy_html_report(enriched_trivy_path, output_dir, cache_dir):
     # Собираем статистику и группируем данные
     stats, grouped_vulnerabilities = collect_statistics_and_group_data(trivy_data)
 
+    # Извлекаем метаданные diff если они есть
+    diff_metadata = trivy_data.get('_diff_metadata', None)
+
+    # Проверяем наличие данных diff
+    has_diff_data = diff_metadata is not None and any(
+        sum(v.values()) > 0 for v in diff_metadata.values()
+    )
+
     # Извлекаем версию Trivy из отчета
     trivy_version = extract_trivy_version(trivy_data)
 
@@ -59,7 +67,9 @@ def generate_trivy_html_report(enriched_trivy_path, output_dir, cache_dir):
         grouped_vulnerabilities,
         Path(enriched_trivy_path).name,
         tailwind_js,
-        trivy_version
+        trivy_version,
+        diff_metadata,
+        has_diff_data
     )
 
     # Сохраняем файл
@@ -344,7 +354,8 @@ def get_cvss_data(vuln):
     return 'N/A', 'N/A'
 
 
-def generate_html_content(trivy_data, stats, grouped_vulnerabilities, report_filename, tailwind_js, trivy_version):
+def generate_html_content(trivy_data, stats, grouped_vulnerabilities, report_filename, tailwind_js, trivy_version,
+                          diff_metadata, has_diff_data):
     """
     Генерирует полный HTML контент с встроенным Tailwind JS
     """
@@ -355,7 +366,7 @@ def generate_html_content(trivy_data, stats, grouped_vulnerabilities, report_fil
     sploitscan_version = config.get('sploitscan_version', 'unknown')
     artifact_name = get_artifact_name(report_filename)
 
-    main_content = generate_main_content(stats, grouped_vulnerabilities)
+    main_content = generate_main_content(stats, grouped_vulnerabilities, diff_metadata, has_diff_data)
 
     # ШАГ 1: Получаем базовый шаблон
     base_html = get_base_html()
@@ -397,12 +408,15 @@ def generate_html_content(trivy_data, stats, grouped_vulnerabilities, report_fil
     return final_html
 
 
-def generate_main_content(stats, grouped_vulnerabilities):
+def generate_main_content(stats, grouped_vulnerabilities, diff_metadata, has_diff_data):
     """
     Генерирует основное содержимое отчета
     """
     # Статистические карточки
     stats_cards = generate_stats_cards(stats)
+
+    # Статистика сравнения (если есть)
+    diff_stats_html = generate_diff_stats(diff_metadata) if has_diff_data else ''
 
     # Контент с группировкой по разделам
     vulnerabilities_content = generate_vulnerabilities_content(grouped_vulnerabilities)
@@ -411,7 +425,7 @@ def generate_main_content(stats, grouped_vulnerabilities):
     <div class="grid grid-cols-1 lg:grid-cols-[290px_minmax(0,1fr)] gap-6">
       <!-- Sidebar -->
       <aside class="no-print hidden lg:block">
-        {generate_sidebar(grouped_vulnerabilities)}
+        {generate_sidebar(grouped_vulnerabilities, has_diff_data)}
       </aside>
 
       <!-- Main column -->
@@ -420,6 +434,9 @@ def generate_main_content(stats, grouped_vulnerabilities):
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7 gap-4 mb-6">
           {stats_cards}
         </div>
+
+        <!-- Diff statistics (если есть) -->
+        {diff_stats_html}
 
         <!-- Counter for visible cards -->
         <div id="visibleCounter" class="mb-4 px-3 py-2 bg-brand-50 text-brand-700 dark:bg-brand-900/30 dark:text-brand-300 rounded-md text-sm font-medium hidden">
@@ -536,8 +553,123 @@ def generate_stats_cards(stats):
     return '\n'.join(cards)
 
 
-def generate_sidebar(grouped_vulnerabilities):
+def generate_diff_stats(diff_metadata):
+    """Генерирует блок со статистикой сравнения"""
+    packages = diff_metadata.get('packages', {})
+    vulnerabilities = diff_metadata.get('vulnerabilities', {})
+
+    # Проверяем, есть ли вообще данные
+    if not packages and not vulnerabilities:
+        return ''
+
+    # Цвета для статусов пакетов
+    package_colors = {
+        'new': 'bg-red-100 text-red-700 dark:bg-red-800/40 dark:text-red-100',  # 🔴 КРАСНЫЙ
+        'unchanged': 'bg-yellow-100 text-yellow-700 dark:bg-yellow-800/40 dark:text-yellow-100',  # 🟡 ЖЕЛТЫЙ
+        'updated': 'bg-blue-100 text-blue-700 dark:bg-blue-800/40 dark:text-blue-100',  # 🔵 СИНИЙ
+        'removed': 'bg-green-100 text-green-700 dark:bg-green-800/40 dark:text-green-100'  # 🟢 ЗЕЛЕНЫЙ
+    }
+
+    # Цвета для статусов уязвимостей
+    vuln_colors = {
+        'new': 'bg-red-100 text-red-700 dark:bg-red-800/40 dark:text-red-100',  # 🔴 КРАСНЫЙ
+        'unchanged': 'bg-yellow-100 text-yellow-700 dark:bg-yellow-800/40 dark:text-yellow-100',  # 🟡 ЖЕЛТЫЙ
+        'removed': 'bg-green-100 text-green-700 dark:bg-green-800/40 dark:text-green-100'  # 🟢 ЗЕЛЕНЫЙ
+    }
+
+    # Генерируем HTML для пакетов
+    packages_html = ''
+    if packages:
+        packages_items = []
+        for status, count in packages.items():
+            if count > 0:
+                color_class = package_colors.get(status, 'bg-gray-100')
+                status_display = status.upper()
+                packages_items.append(
+                    f'<span class="badge {color_class}">{status_display}: {count}</span>'
+                )
+        if packages_items:
+            packages_html = f'''
+            <div class="flex items-center gap-2 flex-wrap">
+                <span class="font-medium text-sm">Packages:</span>
+                {' '.join(packages_items)}
+            </div>
+            '''
+
+    # Генерируем HTML для уязвимостей
+    vulns_html = ''
+    if vulnerabilities:
+        vulns_items = []
+        for status, count in vulnerabilities.items():
+            if count > 0:
+                color_class = vuln_colors.get(status, 'bg-gray-100')
+                status_display = status.upper()
+                vulns_items.append(
+                    f'<span class="badge {color_class}">{status_display}: {count}</span>'
+                )
+        if vulns_items:
+            vulns_html = f'''
+            <div class="flex items-center gap-2 flex-wrap">
+                <span class="font-medium text-sm">Vulnerabilities:</span>
+                {' '.join(vulns_items)}
+            </div>
+            '''
+
+    # Если нет данных, возвращаем пустую строку
+    if not packages_html and not vulns_html:
+        return ''
+
+    return f'''
+    <div class="card mb-6 border-brand-200 dark:border-brand-800">
+        <div class="card-body">
+            <h3 class="text-sm font-semibold tracking-wide uppercase muted mb-3">📊 Comparison Summary</h3>
+            <div class="space-y-2">
+                {packages_html}
+                {vulns_html}
+            </div>
+        </div>
+    </div>
+    '''
+
+
+def generate_change_filter(has_diff_data):
+    """Генерирует выпадающие списки для фильтрации по статусам изменения"""
+    if not has_diff_data:
+        return ''
+
+    return '''
+    <div class="mb-4 space-y-3">
+        <!-- Фильтр по статусу пакета -->
+        <div class="flex items-center gap-2">
+            <label for="packageChangeFilter" class="text-sm font-medium muted">Package status:</label>
+            <select id="packageChangeFilter" class="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-500 dark:border-gray-700 dark:bg-gray-800">
+                <option value="all">All packages</option>
+                <option value="new">🟢 NEW</option>
+                <option value="unchanged">⚪ UNCHANGED</option>
+                <option value="updated">🔵 UPDATED</option>
+                <option value="removed">🔴 REMOVED</option>
+            </select>
+        </div>
+
+        <!-- Фильтр по статусу уязвимости -->
+        <div class="flex items-center gap-2">
+            <label for="vulnChangeFilter" class="text-sm font-medium muted">Vulnerability status:</label>
+            <select id="vulnChangeFilter" class="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-500 dark:border-gray-700 dark:bg-gray-800">
+                <option value="all">All vulnerabilities</option>
+                <option value="new">🔴 NEW</option>
+                <option value="unchanged">🟡 UNCHANGED</option>
+                <option value="removed">🟢 REMOVED</option>
+            </select>
+        </div>
+    </div>
+    '''
+
+
+def generate_sidebar(grouped_vulnerabilities, has_diff_data=False):
     """Генерирует боковую панель с навигацией в виде дерева"""
+
+    # Генерируем фильтры сравнения (только если есть diff данные)
+    diff_filters_html = generate_diff_filters() if has_diff_data else ''
 
     sections_list = []
 
@@ -547,11 +679,22 @@ def generate_sidebar(grouped_vulnerabilities):
 
         # Создаем список пакетов для этой секции
         packages_list = []
-        for pkg_name in packages.keys():
+        for pkg_name, vulns in packages.items():
             # Создаем ID для пакета (комбинация section_id + pkg_name)
             pkg_id = f"{section_id}__{pkg_name.replace(' ', '_').replace('(', '').replace(')', '').replace('/', '_')}"
+
+            # Получаем статус пакета (из _package_change_type первой уязвимости)
+            pkg_change_type = None
+            if vulns and len(vulns) > 0:
+                pkg_change_type = vulns[0].get('_package_change_type')
+
+            # Добавляем цветной индикатор статуса пакета (текст, не эмодзи)
+            status_text = ''
+            if pkg_change_type:
+                status_text = f' [{pkg_change_type.upper()}]'
+
             packages_list.append(
-                f'<a href="#{pkg_id}" class="block rounded px-2 py-1 text-sm hover:bg-gray-100 dark:hover:bg-gray-700 pl-6 break-words" title="{pkg_name}">{pkg_name}</a>'
+                f'<a href="#{pkg_id}" class="block rounded px-2 py-1 text-sm hover:bg-gray-100 dark:hover:bg-gray-700 pl-6 break-words" title="{pkg_name}">{pkg_name}{status_text}</a>'
             )
 
         packages_html = '\n'.join(packages_list)
@@ -644,6 +787,9 @@ def generate_sidebar(grouped_vulnerabilities):
               </div>
             </div>
 
+            <!-- Фильтры сравнения (только если есть diff данные) -->
+            {diff_filters_html}
+
             <div class="flex items-center gap-2">
               <input id="filterNotScanned" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-brand-600 focus:ring-brand-600 dark:border-gray-600" />
               <label for="filterNotScanned" class="text-sm">Not scanned by SploitScan</label>
@@ -681,6 +827,30 @@ def generate_sidebar(grouped_vulnerabilities):
     """
 
 
+def generate_diff_filters():
+    """Генерирует фильтры сравнения для боковой панели"""
+    return '''
+    <div>
+      <label class="block text-xs font-medium muted mb-1">Package Change Status</label>
+      <div class="flex flex-wrap gap-2">
+        <button data-package-change="new" class="pkg-change chip bg-red-100 text-red-700 dark:bg-red-800/40 dark:text-red-100">NEW</button>
+        <button data-package-change="unchanged" class="pkg-change chip bg-yellow-100 text-yellow-700 dark:bg-yellow-800/40 dark:text-yellow-100">UNCHANGED</button>
+        <button data-package-change="updated" class="pkg-change chip bg-blue-100 text-blue-700 dark:bg-blue-800/40 dark:text-blue-100">UPDATED</button>
+        <button data-package-change="removed" class="pkg-change chip bg-green-100 text-green-700 dark:bg-green-800/40 dark:text-green-100">REMOVED</button>
+      </div>
+    </div>
+
+    <div>
+      <label class="block text-xs font-medium muted mb-1">Vulnerability Change Status</label>
+      <div class="flex flex-wrap gap-2">
+        <button data-vuln-change="new" class="vuln-change chip bg-red-100 text-red-700 dark:bg-red-800/40 dark:text-red-100">NEW</button>
+        <button data-vuln-change="unchanged" class="vuln-change chip bg-yellow-100 text-yellow-700 dark:bg-yellow-800/40 dark:text-yellow-100">UNCHANGED</button>
+        <button data-vuln-change="removed" class="vuln-change chip bg-green-100 text-green-700 dark:bg-green-800/40 dark:text-green-100">REMOVED</button>
+      </div>
+    </div>
+    '''
+
+
 def generate_vulnerabilities_content(grouped_vulnerabilities):
     """Генерирует контент с уязвимостями, сгруппированными по разделам"""
     content_parts = []
@@ -711,7 +881,7 @@ def generate_vulnerabilities_content(grouped_vulnerabilities):
 
 
 def generate_package_section(section_name, pkg_name, vulnerabilities):
-    """Обновленная версия с дедупликацией"""
+    """Обновленная версия с дедупликацией и статусами"""
     # ДЕДУПЛИКАЦИЯ: группируем уязвимости
     grouped_vulns = group_vulnerabilities_by_unique_key(vulnerabilities)
 
@@ -719,6 +889,22 @@ def generate_package_section(section_name, pkg_name, vulnerabilities):
     section_id = section_name.replace(' ', '_').replace('(', '').replace(')', '').replace('/', '_')
     pkg_safe = pkg_name.replace(' ', '_').replace('(', '').replace(')', '').replace('/', '_')
     pkg_id = f"{section_id}__{pkg_safe}"
+
+    # Получаем статус изменения пакета (из _package_change_type первой уязвимости)
+    pkg_change_type = None
+    if vulnerabilities and len(vulnerabilities) > 0:
+        pkg_change_type = vulnerabilities[0].get('_package_change_type')
+
+    # Добавляем бейдж статуса пакета (без эмодзи)
+    status_badge = ''
+    if pkg_change_type:
+        badges = {
+            'new': '<span class="badge bg-red-100 text-red-700 dark:bg-red-800/40 dark:text-red-100 ml-2">NEW</span>',
+            'unchanged': '<span class="badge bg-yellow-100 text-yellow-700 dark:bg-yellow-800/40 dark:text-yellow-100 ml-2">UNCHANGED</span>',
+            'updated': '<span class="badge bg-blue-100 text-blue-700 dark:bg-blue-800/40 dark:text-blue-100 ml-2">UPDATED</span>',
+            'removed': '<span class="badge bg-green-100 text-green-700 dark:bg-green-800/40 dark:text-green-100 ml-2">REMOVED</span>'
+        }
+        status_badge = badges.get(pkg_change_type, '')
 
     # СОРТИРОВКА: по severity
     sorted_vulns = sorted(
@@ -729,10 +915,11 @@ def generate_package_section(section_name, pkg_name, vulnerabilities):
 
     # Генерируем контент
     package_content = f"""
-    <div id="{pkg_id}" class="mb-6 last:mb-0">
-        <h3 class="font-semibold text-md mb-3 border-b pb-2">
-            {pkg_name} 
-            <span class="text-sm font-normal muted">
+    <div id="{pkg_id}" class="mb-6 last:mb-0" data-package-change-type="{pkg_change_type if pkg_change_type else 'none'}">
+        <h3 class="font-semibold text-md mb-3 border-b pb-2 flex items-center flex-wrap">
+            <span>{pkg_name}</span>
+            {status_badge}
+            <span class="text-sm font-normal muted ml-auto">
                 ({len(sorted_vulns)} unique vulnerabilities, {sum(v['count'] for v in sorted_vulns)} total occurrences)
             </span>
         </h3>
@@ -773,6 +960,12 @@ def generate_vulnerability_card(vuln_data):
         'FixedVersion', 'Not fixed')
 
     references = base_vuln.get('References', [])
+
+    # Получаем статус изменения уязвимости
+    vuln_change_type = base_vuln.get('_change_type')
+
+    # Получаем статус пакета для уязвимости
+    pkg_change_type = base_vuln.get('_package_change_type')
 
     # CVSS данные
     cvss_score, cvss_vector = get_cvss_data(base_vuln)
@@ -866,6 +1059,8 @@ def generate_vulnerability_card(vuln_data):
     data-expl="{str(has_any_exploits(sploitscan)).lower()}"
     data-status="{status.lower()}"
     data-scanned="{str(is_scanned).lower()}"
+    data-vuln-change-type="{vuln_change_type if vuln_change_type else 'none'}"
+    data-package-change-type="{pkg_change_type if pkg_change_type else 'none'}"
     data-count="{vuln_data['count']}"
     """
 
@@ -894,6 +1089,41 @@ def generate_vulnerability_card(vuln_data):
         </div>
       </div>
     """
+
+    # Добавляем строку со статусом изменения уязвимости (если есть)
+    if vuln_change_type:
+        change_badges = {
+            'new': '<span class="badge bg-red-100 text-red-700 dark:bg-red-800/40 dark:text-red-100">NEW</span>',
+            'unchanged': '<span class="badge bg-yellow-100 text-yellow-700 dark:bg-yellow-800/40 dark:text-yellow-100">UNCHANGED</span>',
+            'removed': '<span class="badge bg-green-100 text-green-700 dark:bg-green-800/40 dark:text-green-100">REMOVED</span>'
+        }
+        change_badge = change_badges.get(vuln_change_type, '')
+        if change_badge:
+            card_html += f"""
+      <div class="mb-3">
+        <div class="flex items-center gap-2 text-sm">
+          <span class="font-medium">Vulnerability change:</span> {change_badge}
+        </div>
+      </div>
+            """
+
+    # Добавляем строку со статусом пакета (если есть)
+    if pkg_change_type:
+        pkg_badges = {
+            'new': '<span class="badge bg-red-100 text-red-700 dark:bg-red-800/40 dark:text-red-100">NEW</span>',
+            'unchanged': '<span class="badge bg-yellow-100 text-yellow-700 dark:bg-yellow-800/40 dark:text-yellow-100">UNCHANGED</span>',
+            'updated': '<span class="badge bg-blue-100 text-blue-700 dark:bg-blue-800/40 dark:text-blue-100">UPDATED</span>',
+            'removed': '<span class="badge bg-green-100 text-green-700 dark:bg-green-800/40 dark:text-green-100">REMOVED</span>'
+        }
+        pkg_badge = pkg_badges.get(pkg_change_type, '')
+        if pkg_badge:
+            card_html += f"""
+      <div class="mb-3">
+        <div class="flex items-center gap-2 text-sm">
+          <span class="font-medium">Package change:</span> {pkg_badge}
+        </div>
+      </div>
+            """
 
     # Для УНИКАЛЬНЫХ уязвимостей (count = 1) - показываем Location и Source file в начале
     if vuln_data['count'] == 1 and vuln_data['paths']:

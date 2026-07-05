@@ -426,7 +426,7 @@ def get_javascript():
       }
     })();
 
-    // Filters: search, priority, severity, epss, cisa, exploits, status, not scanned
+    // Filters: search, priority, severity, epss, cisa, exploits, status, not scanned, change types
     document.addEventListener('DOMContentLoaded', function() {
       const input = document.getElementById('searchInput');
       const epssInput = document.getElementById('filterEPSS');
@@ -443,6 +443,8 @@ def get_javascript():
       let selectedPrios = new Set();
       let selectedSeverities = new Set();
       let selectedStatuses = new Set();
+      let selectedPkgChanges = new Set();
+      let selectedVulnChanges = new Set();
 
       // Update counter function - ТОЛЬКО видимые карточки
       function updateVisibleCounter(visibleCards) {
@@ -457,7 +459,9 @@ def get_javascript():
           (notScannedCheckbox && notScannedCheckbox.checked) ||
           selectedPrios.size > 0 ||
           selectedSeverities.size > 0 ||
-          selectedStatuses.size > 0;
+          selectedStatuses.size > 0 ||
+          selectedPkgChanges.size > 0 ||
+          selectedVulnChanges.size > 0;
 
         if (hasActiveFilters) {
           visibleCounter.classList.remove('hidden');
@@ -511,6 +515,36 @@ def get_javascript():
         });
       });
 
+      // Initialize package change filters
+      document.querySelectorAll('.pkg-change').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          const s = this.getAttribute('data-package-change');
+          if (selectedPkgChanges.has(s)) {
+            selectedPkgChanges.delete(s);
+            this.classList.remove('ring-2', 'ring-brand-600');
+          } else {
+            selectedPkgChanges.add(s);
+            this.classList.add('ring-2', 'ring-brand-600');
+          }
+          applyFilters();
+        });
+      });
+
+      // Initialize vulnerability change filters
+      document.querySelectorAll('.vuln-change').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          const s = this.getAttribute('data-vuln-change');
+          if (selectedVulnChanges.has(s)) {
+            selectedVulnChanges.delete(s);
+            this.classList.remove('ring-2', 'ring-brand-600');
+          } else {
+            selectedVulnChanges.add(s);
+            this.classList.add('ring-2', 'ring-brand-600');
+          }
+          applyFilters();
+        });
+      });
+
       // Event listeners for other filters
       input.addEventListener('input', applyFilters);
 
@@ -543,6 +577,16 @@ def get_javascript():
             btn.classList.remove('ring-2', 'ring-brand-600');
           });
 
+          selectedPkgChanges.clear();
+          document.querySelectorAll('.pkg-change').forEach(function(btn) {
+            btn.classList.remove('ring-2', 'ring-brand-600');
+          });
+
+          selectedVulnChanges.clear();
+          document.querySelectorAll('.vuln-change').forEach(function(btn) {
+            btn.classList.remove('ring-2', 'ring-brand-600');
+          });
+
           applyFilters();
         });
       }
@@ -567,6 +611,8 @@ def get_javascript():
           const cardExpl = card.getAttribute('data-expl') === 'true';
           const cardStatus = card.getAttribute('data-status') || '';
           const cardScanned = card.getAttribute('data-scanned') === 'true';
+          const cardPkgChange = card.getAttribute('data-package-change-type') || 'none';
+          const cardVulnChange = card.getAttribute('data-vuln-change-type') || 'none';
 
           let visible = true;
 
@@ -610,6 +656,16 @@ def get_javascript():
 
           // Not scanned filter - ПОКАЗЫВАТЬ ТОЛЬКО НЕ ОТСКАНИРОВАННЫЕ
           if (visible && showNotScanned && cardScanned) {
+            visible = false;
+          }
+
+          // Package change type filter
+          if (visible && selectedPkgChanges.size > 0 && !selectedPkgChanges.has(cardPkgChange)) {
+            visible = false;
+          }
+
+          // Vulnerability change type filter
+          if (visible && selectedVulnChanges.size > 0 && !selectedVulnChanges.has(cardVulnChange)) {
             visible = false;
           }
 

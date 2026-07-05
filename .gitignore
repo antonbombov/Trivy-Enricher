@@ -31,3 +31,6 @@ cache
 docker/Cache
 docker/Reports
 docker/Scan
+
+#временный код
+tmp.py
