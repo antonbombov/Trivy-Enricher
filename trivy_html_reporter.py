@@ -1520,45 +1520,39 @@ def get_scan_datetime(trivy_data):
 
 def group_vulnerabilities_by_unique_key(vulnerabilities):
     """
-    Группирует уязвимости, чтобы избежать дублей в отображении
-    Возвращает список сгруппированных уязвимостей
+    Группирует уязвимости по CVE + статус изменения (_change_type)
+
+    Это позволяет:
+    - Разделить new, unchanged, removed в разные карточки
+    - При этом сохранить дедупликацию внутри каждого статуса
     """
     grouped = {}
 
     for vuln in vulnerabilities:
-        # Основной ключ для группировки - уникальная уязвимость
-        # CVE + Пакет + Версия (PURL лучше всего)
-        purl = vuln.get('PkgIdentifier', {}).get('PURL', '')
+        cve_id = vuln.get('VulnerabilityID', 'Unknown')
 
-        if purl:
-            # Используем PURL как уникальный идентификатор пакета
-            # Формат: pkg:maven/ch.qos.logback/logback-classic@1.2.3
-            key = f"{vuln.get('VulnerabilityID')}::{purl}"
-        else:
-            # Fallback: CVE + PkgName + Version
-            key = (
-                vuln.get('VulnerabilityID'),
-                vuln.get('PkgName'),
-                vuln.get('InstalledVersion')
-            )
-            key = str(key)
+        # Получаем статус изменения (если нет - считаем как 'none')
+        change_type = vuln.get('_change_type', 'none')
+
+        # Ключ группировки: CVE + статус изменения
+        key = f"{cve_id}:::{change_type}"
 
         # Добавляем в группу
         if key not in grouped:
             grouped[key] = {
-                'vulnerability': vuln.copy(),  # основная информация
-                'paths': set(),  # уникальные пути
-                'sources': set(),  # исходные файлы/артефакты
-                'count': 0,  # общее количество вхождений
-                'statuses': set(),  # уникальные статусы
-                'fixed_versions': set()  # уникальные фиксы
+                'vulnerability': vuln.copy(),
+                'paths': set(),
+                'sources': set(),
+                'count': 0,
+                'statuses': set(),
+                'fixed_versions': set()
             }
 
         # Собираем дополнительные данные
         data = grouped[key]
 
         # Пути
-        pkg_path = vuln.get('PkgPath')
+        pkg_path = vuln.get('PkgPath', '')
         if pkg_path:
             data['paths'].add(pkg_path)
 

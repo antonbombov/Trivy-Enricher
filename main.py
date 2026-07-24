@@ -8,7 +8,10 @@ from excel_reporter import generate_excel_report, generate_ptai_only_reports_for
 from config_manager import load_config, setup_directories, find_ptai_report_for_trivy
 from cache_cleaner import cleanup_old_cache, get_cache_stats
 from cdn_cache_manager import get_cdn_cache_stats
-from argument_parser import parse_arguments, get_report_types
+from argument_parser import parse_arguments, get_report_types, get_diff_files
+
+# Импортируем diff анализатор
+from trivy_diff import TrivyDiffAnalyzer
 
 
 def print_banner():
@@ -28,6 +31,54 @@ def print_banner():
     print("=" * 70)
     print("VIBECHECKER - Trivy Enricher with SploitScan")
     print("=" * 70)
+
+
+def run_diff_mode(scan_dir: Path, file1: str, file2: str):
+    """
+    Выполняет diff анализ между двумя отчетами Trivy
+    """
+    print("\n" + "=" * 70)
+    print("🔍 РЕЖИМ DIFF АНАЛИЗА")
+    print("=" * 70)
+
+    report1_path = scan_dir / file1
+    report2_path = scan_dir / file2
+
+    # Проверяем существование файлов
+    if not report1_path.exists():
+        print(f"❌ Ошибка: файл не найден: {report1_path}")
+        return False
+
+    if not report2_path.exists():
+        print(f"❌ Ошибка: файл не найден: {report2_path}")
+        return False
+
+    print(f"\n📂 Сравниваем отчеты:")
+    print(f"  Отчет 1 (baseline): {report1_path.name}")
+    print(f"  Отчет 2 (новый): {report2_path.name}")
+    print()
+
+    try:
+        # Создаем анализатор и запускаем анализ
+        analyzer = TrivyDiffAnalyzer(str(report1_path), str(report2_path), debug=True)
+        analyzer.analyze()
+        analyzer.print_summary()
+
+        # Сохраняем diff отчет в scan_directory
+        output_file = analyzer.save_diff_report(output_dir=scan_dir, prefix="trivy_diff_output")
+
+        print(f"\n💾 Diff отчет сохранен: {output_file}")
+        print(f"\n{'=' * 70}")
+        print("✅ DIFF АНАЛИЗ ЗАВЕРШЕН")
+        print("=" * 70)
+        return True
+
+    except Exception as e:
+        print(f"\n❌ Ошибка при выполнении diff анализа: {e}")
+        print("\nПолная ошибка:")
+        import traceback
+        traceback.print_exc()
+        return False
 
 
 def cleanup_logs(output_dir):
@@ -171,11 +222,19 @@ def main():
 
     # Парсим аргументы командной строки
     args = parse_arguments()
-    generate_html, generate_excel_flag, skip_enrich, only_cache, ptai_only = get_report_types(args)
 
     # Загружаем конфигурацию
     config = load_config()
     scan_dir, cache_dir, output_dir = setup_directories(config)
+
+    # Проверяем режим diff
+    diff_files = get_diff_files(args)
+    if diff_files:
+        # Запускаем diff режим и завершаем работу
+        run_diff_mode(scan_dir, diff_files[0], diff_files[1])
+        return
+
+    generate_html, generate_excel_flag, skip_enrich, only_cache, ptai_only = get_report_types(args)
 
     print(f"\n📋 Режимы работы:")
     print(f"   HTML отчеты: {'✅ ВКЛЮЧЕНЫ' if generate_html else '❌ ОТКЛЮЧЕНЫ'}")
@@ -249,6 +308,7 @@ def main():
     trivy_files = [
         f for f in trivy_files
         if f.name != 'config.json'
+        # Убрана фильтрация trivy_diff_output
     ]
 
     if not trivy_files:

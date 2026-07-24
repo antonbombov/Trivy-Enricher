@@ -1,7 +1,7 @@
 # argument_parser.py
 import argparse
 import sys
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
 
 
 def parse_arguments():
@@ -10,7 +10,7 @@ def parse_arguments():
     """
     parser = argparse.ArgumentParser(
         description='Trivy Enricher - обогащение отчетов Trivy данными SploitScan',
-        usage='python main.py [-h] [-html] [-excel] [--skip-enrich | --se] [--only-cache | --oc] [--ptai-only | --po]',
+        usage='python main.py [-h] [-html] [-excel] [--skip-enrich | --se] [--only-cache | --oc] [--ptai-only | --po] [-diff REPORT1 REPORT2]',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Примеры использования:
@@ -20,6 +20,7 @@ def parse_arguments():
   python main.py -html -excel --skip-enrich # Оба отчета без обогащения
   python main.py -html -excel --only-cache  # Оба отчета только из кэша
   python main.py -excel --ptai-only        # Только Excel отчет с PTAI анализом
+  python main.py -diff report1.json report2.json  # Diff анализ двух отчетов
   python main.py -h                        # Показать эту справку
 
 Короткие формы опций:
@@ -59,7 +60,21 @@ def parse_arguments():
         help='Генерировать только Excel отчет с PTAI анализом (без Trivy SCA)'
     )
 
+    parser.add_argument(
+        '-diff',
+        nargs=2,
+        metavar=('REPORT1', 'REPORT2'),
+        help='Выполнить diff анализ между двумя отчетами Trivy (имена файлов из scan_directory)'
+    )
+
     args = parser.parse_args()
+
+    # Валидация: режим diff не совместим с другими режимами
+    if args.diff:
+        if args.html or args.excel or args.skip_enrich or args.only_cache or args.ptai_only:
+            print("❌ Ошибка: режим -diff не может использоваться вместе с другими режимами")
+            sys.exit(1)
+        return args
 
     # Если аргументы не указаны - показываем help
     if not any(vars(args).values()):
@@ -100,17 +115,31 @@ def get_report_types(args) -> Tuple[bool, bool, bool, bool, bool]:
     return args.html, args.excel, args.skip_enrich, args.only_cache, args.ptai_only
 
 
+def get_diff_files(args) -> Optional[List[str]]:
+    """
+    Возвращает список файлов для diff анализа
+
+    Args:
+        args: Объект с аргументами
+
+    Returns:
+        Optional[List[str]]: Список из двух имен файлов или None
+    """
+    return args.diff if args.diff else None
+
+
 def print_usage():
     """
     Выводит краткую справку по использованию
     """
     print("Trivy Enricher - обогащение отчетов Trivy данными SploitScan")
     print("=" * 60)
-    print("Использование: python main.py [-h] [-html] [-excel] [--skip-enrich | --se] [--only-cache | --oc] [--ptai-only | --po]")
+    print("Использование: python main.py [-h] [-html] [-excel] [--skip-enrich | --se] [--only-cache | --oc] [--ptai-only | --po] [-diff REPORT1 REPORT2]")
     print("\nКоманды (один дефис):")
     print("  -html         Генерировать HTML отчет (интерактивный с фильтрами)")
     print("  -excel        Генерировать Excel отчет (SCA анализ + PTAI анализ)")
     print("  -h            Показать эту справку")
+    print("  -diff REPORT1 REPORT2  Выполнить diff анализ между двумя отчетами")
     print("\nОпции (два дефиса):")
     print("  --skip-enrich, --se   Пропустить обогащение SploitScan, использовать исходный отчет")
     print("  --only-cache, --oc    Использовать только кэшированные данные (без вызова SploitScan)")
@@ -122,4 +151,5 @@ def print_usage():
     print("  python main.py -html -excel --skip-enrich # Оба отчета без обогащения")
     print("  python main.py -html -excel --only-cache  # Оба отчета только из кэша")
     print("  python main.py -excel --ptai-only        # Только Excel отчет с PTAI анализом")
+    print("  python main.py -diff report1.json report2.json  # Diff анализ")
     print("=" * 60)
