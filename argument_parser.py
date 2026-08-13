@@ -12,7 +12,7 @@ def interactive_file_selection(scan_dir: Path, prompt: str, exclude: List[str] =
     files = []
     for f in scan_dir.glob("*.json"):
         if f.name not in ['config.json', *exclude]:
-            if not f.name.startswith('diff_report') and not f.name.endswith('_enriched.json'):
+            if not f.name.startswith('diff_report'):
                 files.append(f.name)
 
     files.sort()
@@ -175,7 +175,7 @@ def parse_arguments():
         print("   Уберите -html или используйте обычный режим")
         sys.exit(1)
 
-    # 5. -ptai-only игнорирует ключи обогащения (предупреждение)
+    # 5. -ptai-only игнорирует ключи обогащения (предупреждение + сброс)
     if args.ptai_only:
         if args.skip_enrich:
             print("⚠️  Предупреждение: -ptai-only игнорирует -skip-enrich")
@@ -233,8 +233,7 @@ def get_diff_files(args, scan_dir: Path) -> Tuple[Optional[List[str]], bool]:
         json_files = list(scan_dir.glob("*.json"))
         json_files = [f for f in json_files
                       if f.name != 'config.json'
-                      and not f.name.startswith('diff_report')
-                      and not f.name.endswith('_enriched.json')]
+                      and not f.name.startswith('trivy_diff_output')]
 
         if not json_files:
             print("❌ Нет JSON файлов для анализа")
