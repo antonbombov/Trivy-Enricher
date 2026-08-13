@@ -579,6 +579,15 @@ def collect_all_vulnerabilities_with_diff(trivy_data, diff_mode='standard'):
             # Получаем статус пакета
             pkg_change_type = vuln.get('_package_change_type')
 
+            # Получаем информацию об изменении версии (для UPDATED)
+            version_change = ''
+            if pkg_change_type == 'updated':
+                version_change_data = vuln.get('_package_version_change', {})
+                old_ver = version_change_data.get('old_version')
+                new_ver = version_change_data.get('new_version')
+                if old_ver and new_ver:
+                    version_change = f"{old_ver} → {new_ver}"
+
             pkg_path = vuln.get('PkgPath', 'N/A')
             root_jar = extract_root_jar(pkg_path)
 
@@ -619,7 +628,8 @@ def collect_all_vulnerabilities_with_diff(trivy_data, diff_mode='standard'):
                 'status': '',
                 'comment': '',
                 'vuln_change_type': vuln_change_type,
-                'package_change_type': pkg_change_type
+                'package_change_type': pkg_change_type,
+                'version_change': version_change
             }
 
             all_vulns.append(vuln_data)
@@ -631,6 +641,7 @@ def group_vulnerabilities_by_artifact(vulnerabilities):
     """
     Группирует уязвимости по уникальному артефакту (источник + путь + пакет + версия)
     Объединяет все CVE, найденные для одного и того же артефакта
+    (используется ТОЛЬКО для standard режима - без diff)
     """
     from collections import defaultdict
 
@@ -641,8 +652,6 @@ def group_vulnerabilities_by_artifact(vulnerabilities):
         'remediation_periods': [],
         'statuses': set(),
         'comments': set(),
-        'vuln_statuses': set(),  # статусы уязвимостей (new/unchanged/removed)
-        'package_change_type': None,  # статус пакета (new/unchanged/updated/removed)
         'source': None,
         'path': None,
         'package': None,
@@ -662,16 +671,8 @@ def group_vulnerabilities_by_artifact(vulnerabilities):
         group['package'] = vuln['package']
         group['version'] = vuln['version']
 
-        # Статус пакета (берем первый попавшийся, они должны быть одинаковыми)
-        if vuln.get('package_change_type') and not group['package_change_type']:
-            group['package_change_type'] = vuln['package_change_type']
-
         # ID уязвимостей
         group['vulnerability_ids'].add(vuln['vulnerability_id'])
-
-        # Статусы уязвимостей
-        if vuln.get('vuln_change_type'):
-            group['vuln_statuses'].add(vuln['vuln_change_type'])
 
         # Уровни критичности
         severity = vuln['severity']
@@ -693,9 +694,6 @@ def group_vulnerabilities_by_artifact(vulnerabilities):
     for key, group in groups.items():
         # Объединяем идентификаторы уязвимостей
         vuln_ids_str = '\n'.join(sorted(group['vulnerability_ids']))
-
-        # Объединяем статусы уязвимостей (уникальные)
-        vuln_statuses_str = '\n'.join(sorted(group['vuln_statuses']))
 
         # Объединяем уровни критичности
         unique_severities = []
@@ -722,8 +720,6 @@ def group_vulnerabilities_by_artifact(vulnerabilities):
             'package': group['package'],
             'version': group['version'],
             'vulnerability_id': vuln_ids_str,
-            'vuln_statuses': vuln_statuses_str,
-            'package_change_type': group['package_change_type'],
             'severity': severity_str,
             'remediation_period': remediation_period,
             'status': status_str,
@@ -733,170 +729,67 @@ def group_vulnerabilities_by_artifact(vulnerabilities):
     return result
 
 
-def add_sca_sheet(workbook, enriched_trivy_path, sheet_name="SCA Анализ", diff_mode='standard'):
+def group_vulnerabilities_by_package_for_diff(vulnerabilities):
     """
-    Добавляет лист с SCA анализом из Trivy с группировкой по уникальному пути
-
-    Args:
-        workbook: openpyxl Workbook объект
-        enriched_trivy_path: путь к обогащенному JSON
-        sheet_name: имя листа
-        diff_mode:
-            - 'standard': полный отчет (без diff)
-            - 'full': только new + unchanged (актуальные)
-            - 'new': только new
-            - 'removed': только removed
+    Группирует уязвимости по пакету для diff режимов.
+    Пакет и версия - объединенные ячейки.
+    Каждый CVE - отдельная строка со своим статусом.
     """
-    # Загружаем обогащенный отчет
-    with open(enriched_trivy_path, 'r', encoding='utf-8-sig') as f:
-        trivy_data = json.load(f)
+    from collections import defaultdict
 
-    # Создаем лист
-    ws = workbook.create_sheet(sheet_name)
+    # Группируем по источнику + пакету + версии (путь игнорируем для группировки)
+    groups = defaultdict(list)
 
-    # Собираем уязвимости с учетом diff статусов
-    all_vulnerabilities = collect_all_vulnerabilities_with_diff(trivy_data, diff_mode)
+    for vuln in vulnerabilities:
+        # Ключ группировки: источник + пакет + версия
+        key = (vuln['source'], vuln['package'], vuln['version'])
+        groups[key].append(vuln)
 
-    # Группируем по уникальному пути
-    grouped_vulnerabilities = group_vulnerabilities_by_artifact(all_vulnerabilities)
+    result = []
+    for (source, package, version), vulns in groups.items():
+        # Определяем статус пакета (должен быть одинаковым для всех CVE в группе)
+        package_change_type = None
+        version_change = ''
 
-    # Получаем имя артефакта и текущую дату
-    artifact_name = get_artifact_name(Path(enriched_trivy_path).name)
-    current_date = datetime.now()
+        for v in vulns:
+            if v.get('package_change_type'):
+                package_change_type = v['package_change_type']
+                if v.get('version_change'):
+                    version_change = v['version_change']
+                break
 
-    # Определяем описание для информационного блока
-    if diff_mode == 'new':
-        description = "📌 НОВЫЕ уязвимости и пакеты, появившиеся во втором сканировании"
-    elif diff_mode == 'removed':
-        description = "📌 Уязвимости и пакеты, которые ИСЧЕЗЛИ во втором сканировании"
-    elif diff_mode == 'full':
-        description = "📌 АКТУАЛЬНЫЕ уязвимости (новые + существующие в обоих сканированиях)"
-    else:
-        description = "Необходимо обновить уязвимые компоненты до актуальных версий в указанный срок или обосновать отсутствие такой возможности"
+        # Сортируем уязвимости по severity (CRITICAL → HIGH → ...)
+        severity_order = {'CRITICAL': 4, 'HIGH': 3, 'MEDIUM': 2, 'LOW': 1, 'UNKNOWN': 0}
+        sorted_vulns = sorted(vulns, key=lambda x: severity_order.get(x['severity'], 0), reverse=True)
 
-    # Добавляем информационный блок
-    add_info_block(ws, artifact_name, current_date, description, diff_mode)
+        # Берем путь из первой уязвимости (для отображения)
+        first_path = sorted_vulns[0].get('path', '') if sorted_vulns else ''
 
-    # Определяем заголовки (с дополнительными колонками для diff)
-    if diff_mode == 'standard':
-        headers = SCA_COLUMN_HEADERS
-    else:
-        headers = SCA_DIFF_COLUMN_HEADERS
+        # Для каждого CVE создаем отдельную строку
+        for vuln in sorted_vulns:
+            # Формируем комментарий с информацией об изменении версии (для UPDATED)
+            comment = vuln.get('comment', '')
+            if package_change_type == 'updated' and version_change:
+                if comment:
+                    comment = f"{comment}\nВерсия пакета: {version_change}"
+                else:
+                    comment = f"Версия пакета: {version_change}"
 
-    start_row = 5
-    for col_num, header in enumerate(headers, 1):
-        cell = ws.cell(row=start_row, column=col_num, value=header)
-        cell.font = HEADER_FONT
-        cell.fill = HEADER_FILL
-        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-        cell.border = CELL_BORDER
+            result.append({
+                'source': source,
+                'path': first_path,  # Используем путь из первой уязвимости
+                'package': package,
+                'version': version,
+                'package_change_type': package_change_type,
+                'vulnerability_id': vuln['vulnerability_id'],
+                'vuln_status': vuln.get('vuln_change_type', ''),  # Индивидуальный статус CVE
+                'severity': vuln['severity'],
+                'remediation_period': vuln['remediation_period'],
+                'status': vuln.get('status', ''),
+                'comment': comment
+            })
 
-    # Заполняем данные
-    for row_num, vuln in enumerate(grouped_vulnerabilities, start_row + 1):
-        col = 1
-
-        # №
-        cell = ws.cell(row=row_num, column=col, value=row_num - start_row)
-        cell.border = CELL_BORDER
-        cell.alignment = Alignment(horizontal='center', vertical='center')
-        col += 1
-
-        # Источник
-        cell = ws.cell(row=row_num, column=col, value=vuln['source'])
-        cell.border = CELL_BORDER
-        cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
-        col += 1
-
-        # Путь
-        cell = ws.cell(row=row_num, column=col, value=vuln['path'])
-        cell.border = CELL_BORDER
-        cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
-        col += 1
-
-        # Пакет
-        cell = ws.cell(row=row_num, column=col, value=vuln['package'])
-        cell.border = CELL_BORDER
-        cell.alignment = Alignment(horizontal='left', vertical='center')
-        col += 1
-
-        # Версия
-        cell = ws.cell(row=row_num, column=col, value=vuln['version'])
-        cell.border = CELL_BORDER
-        cell.alignment = Alignment(horizontal='left', vertical='center')
-        col += 1
-
-        # Для diff режимов добавляем колонку со статусом пакета
-        if diff_mode != 'standard':
-            # Статус пакета
-            pkg_status = vuln.get('package_change_type', '')
-            cell = ws.cell(row=row_num, column=col, value=pkg_status.upper() if pkg_status else '')
-            cell.border = CELL_BORDER
-            cell.alignment = Alignment(horizontal='center', vertical='center')
-
-            # Применяем цветовое форматирование для статуса пакета
-            if pkg_status:
-                apply_change_status_style(cell, pkg_status)
-            col += 1
-
-        # Идентификатор уязвимости (объединенный)
-        cell = ws.cell(row=row_num, column=col, value=vuln['vulnerability_id'])
-        cell.border = CELL_BORDER
-        cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
-        col += 1
-
-        # Для diff режимов добавляем колонку со статусом уязвимости
-        if diff_mode != 'standard':
-            # Статус уязвимости (берем первый из списка, если их несколько)
-            vuln_status = vuln.get('vuln_statuses', '')
-            if vuln_status and '\n' in vuln_status:
-                # Если несколько статусов, берем первый как основной
-                vuln_status = vuln_status.split('\n')[0]
-            cell = ws.cell(row=row_num, column=col, value=vuln_status.upper() if vuln_status else '')
-            cell.border = CELL_BORDER
-            cell.alignment = Alignment(horizontal='center', vertical='center')
-
-            # Применяем цветовое форматирование для статуса уязвимости
-            if vuln_status:
-                apply_change_status_style(cell, vuln_status)
-            col += 1
-
-        # Уровень критичности (объединенный)
-        cell = ws.cell(row=row_num, column=col, value=vuln['severity'])
-        cell.border = CELL_BORDER
-        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-        col += 1
-
-        # Срок устранения
-        cell = ws.cell(row=row_num, column=col, value=vuln['remediation_period'])
-        cell.border = CELL_BORDER
-        cell.alignment = Alignment(horizontal='center', vertical='center')
-        col += 1
-
-        # Статус (объединенный)
-        cell = ws.cell(row=row_num, column=col, value=vuln['status'])
-        cell.border = CELL_BORDER
-        cell.alignment = Alignment(horizontal='center', vertical='center')
-        col += 1
-
-        # Комментарий (объединенный)
-        cell = ws.cell(row=row_num, column=col, value=vuln['comment'])
-        cell.border = CELL_BORDER
-        cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
-
-    # Добавляем выпадающие списки для колонки "Статус" только для полного отчета
-    if grouped_vulnerabilities and diff_mode == 'standard':
-        add_dropdown_lists(ws, len(grouped_vulnerabilities), start_row, workbook)
-
-    # Настраиваем ширину колонок
-    set_sca_column_widths(ws, diff_mode)
-
-    # Добавляем фильтры
-    if grouped_vulnerabilities:
-        last_col = len(headers)
-        ws.auto_filter.ref = f"A{start_row}:{get_column_letter(last_col)}{len(grouped_vulnerabilities) + start_row}"
-
-    # Замораживаем строку с заголовками
-    ws.freeze_panes = f'A{start_row + 1}'
+    return result
 
 
 def extract_root_jar(pkg_path):
@@ -1036,6 +929,268 @@ def add_dropdown_lists(worksheet, num_rows, start_row, workbook):
         dv.add(cell_ref)
 
 
+def merge_package_cells(worksheet, data, start_row, col_package, col_version, col_status=None):
+    """
+    Объединяет ячейки для одинаковых пакетов, версий и статуса пакета
+    """
+    if not data:
+        return
+
+    current_key = None
+    start_merge_row = start_row
+    current_status = None
+
+    for i, vuln in enumerate(data, start_row):
+        key = (vuln['package'], vuln['version'])
+
+        if key != current_key:
+            # Закрываем предыдущую группу
+            if current_key is not None and start_merge_row < i:
+                # Объединяем пакет
+                worksheet.merge_cells(
+                    start_row=start_merge_row,
+                    start_column=col_package,
+                    end_row=i - 1,
+                    end_column=col_package
+                )
+                # Объединяем версию
+                worksheet.merge_cells(
+                    start_row=start_merge_row,
+                    start_column=col_version,
+                    end_row=i - 1,
+                    end_column=col_version
+                )
+                # Объединяем статус пакета (если указан)
+                if col_status:
+                    worksheet.merge_cells(
+                        start_row=start_merge_row,
+                        start_column=col_status,
+                        end_row=i - 1,
+                        end_column=col_status
+                    )
+
+                # Центрируем объединенные ячейки
+                for row in range(start_merge_row, i):
+                    for col in [col_package, col_version]:
+                        cell = worksheet.cell(row=row, column=col)
+                        cell.alignment = Alignment(horizontal='center', vertical='center')
+                    if col_status:
+                        cell = worksheet.cell(row=row, column=col_status)
+                        cell.alignment = Alignment(horizontal='center', vertical='center')
+
+            current_key = key
+            start_merge_row = i
+            current_status = vuln.get('package_change_type', '')
+
+        # Для последней группы
+        if i == len(data) + start_row - 1:
+            if start_merge_row <= i:
+                # Объединяем пакет
+                worksheet.merge_cells(
+                    start_row=start_merge_row,
+                    start_column=col_package,
+                    end_row=i,
+                    end_column=col_package
+                )
+                # Объединяем версию
+                worksheet.merge_cells(
+                    start_row=start_merge_row,
+                    start_column=col_version,
+                    end_row=i,
+                    end_column=col_version
+                )
+                # Объединяем статус пакета (если указан)
+                if col_status:
+                    worksheet.merge_cells(
+                        start_row=start_merge_row,
+                        start_column=col_status,
+                        end_row=i,
+                        end_column=col_status
+                    )
+
+                # Центрируем объединенные ячейки
+                for row in range(start_merge_row, i + 1):
+                    for col in [col_package, col_version]:
+                        cell = worksheet.cell(row=row, column=col)
+                        cell.alignment = Alignment(horizontal='center', vertical='center')
+                    if col_status:
+                        cell = worksheet.cell(row=row, column=col_status)
+                        cell.alignment = Alignment(horizontal='center', vertical='center')
+
+
+def add_sca_sheet(workbook, enriched_trivy_path, sheet_name="SCA Анализ", diff_mode='standard'):
+    """
+    Добавляет лист с SCA анализом из Trivy
+
+    Для standard режима:
+        - Группировка по источнику + пути + пакету + версии
+        - Все CVE склеиваются в одну ячейку через перенос строки
+        - Используется старая логика group_vulnerabilities_by_artifact()
+
+    Для diff режимов (full, new, removed):
+        - Группировка по пакету + версии
+        - Каждый CVE - отдельная строка со своим статусом
+        - Пакет, версия и статус пакета - объединенные ячейки
+    """
+    # Загружаем обогащенный отчет
+    with open(enriched_trivy_path, 'r', encoding='utf-8-sig') as f:
+        trivy_data = json.load(f)
+
+    # Создаем лист
+    ws = workbook.create_sheet(sheet_name)
+
+    # Собираем уязвимости с учетом diff статусов
+    all_vulnerabilities = collect_all_vulnerabilities_with_diff(trivy_data, diff_mode)
+
+    # Группируем в зависимости от режима
+    if diff_mode == 'standard':
+        # Старая логика - группировка по артефакту (источник + путь + пакет + версия)
+        grouped_vulnerabilities = group_vulnerabilities_by_artifact(all_vulnerabilities)
+    else:
+        # Новая логика для diff - группировка по пакету, каждый CVE отдельно
+        grouped_vulnerabilities = group_vulnerabilities_by_package_for_diff(all_vulnerabilities)
+
+    # Получаем имя артефакта и текущую дату
+    artifact_name = get_artifact_name(Path(enriched_trivy_path).name)
+    current_date = datetime.now()
+
+    # Определяем описание для информационного блока
+    if diff_mode == 'new':
+        description = "📌 НОВЫЕ уязвимости и пакеты, появившиеся во втором сканировании"
+    elif diff_mode == 'removed':
+        description = "📌 Уязвимости и пакеты, которые ИСЧЕЗЛИ во втором сканировании"
+    elif diff_mode == 'full':
+        description = "📌 АКТУАЛЬНЫЕ уязвимости (новые + существующие в обоих сканированиях)"
+    else:
+        description = "Необходимо обновить уязвимые компоненты до актуальных версий в указанный срок или обосновать отсутствие такой возможности"
+
+    # Добавляем информационный блок
+    add_info_block(ws, artifact_name, current_date, description, diff_mode)
+
+    # Определяем заголовки (с дополнительными колонками для diff)
+    if diff_mode == 'standard':
+        headers = SCA_COLUMN_HEADERS
+    else:
+        headers = SCA_DIFF_COLUMN_HEADERS
+
+    start_row = 5
+    for col_num, header in enumerate(headers, 1):
+        cell = ws.cell(row=start_row, column=col_num, value=header)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell.border = CELL_BORDER
+
+    # Заполняем данные
+    for row_num, vuln in enumerate(grouped_vulnerabilities, start_row + 1):
+        col = 1
+
+        # №
+        cell = ws.cell(row=row_num, column=col, value=row_num - start_row)
+        cell.border = CELL_BORDER
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+        col += 1
+
+        # Источник
+        cell = ws.cell(row=row_num, column=col, value=vuln['source'])
+        cell.border = CELL_BORDER
+        cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+        col += 1
+
+        # Путь
+        cell = ws.cell(row=row_num, column=col, value=vuln['path'])
+        cell.border = CELL_BORDER
+        cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+        col += 1
+
+        # Пакет (будет объединен позже для diff режимов)
+        cell = ws.cell(row=row_num, column=col, value=vuln['package'])
+        cell.border = CELL_BORDER
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        col += 1
+
+        # Версия (будет объединена позже для diff режимов)
+        cell = ws.cell(row=row_num, column=col, value=vuln['version'])
+        cell.border = CELL_BORDER
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        col += 1
+
+        # Для diff режимов добавляем колонку со статусом пакета
+        if diff_mode != 'standard':
+            # Статус пакета (будет объединен позже)
+            pkg_status = vuln.get('package_change_type', '')
+            cell = ws.cell(row=row_num, column=col, value=pkg_status.upper() if pkg_status else '')
+            cell.border = CELL_BORDER
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+
+            # Применяем цветовое форматирование для статуса пакета
+            if pkg_status:
+                apply_change_status_style(cell, pkg_status)
+            col += 1
+
+        # Идентификатор уязвимости
+        cell = ws.cell(row=row_num, column=col, value=vuln['vulnerability_id'])
+        cell.border = CELL_BORDER
+        cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+        col += 1
+
+        # Для diff режимов добавляем колонку со статусом уязвимости
+        if diff_mode != 'standard':
+            # Статус уязвимости (индивидуальный для каждого CVE)
+            vuln_status = vuln.get('vuln_status', '')
+            cell = ws.cell(row=row_num, column=col, value=vuln_status.upper() if vuln_status else '')
+            cell.border = CELL_BORDER
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+
+            # Применяем цветовое форматирование для статуса уязвимости
+            if vuln_status:
+                apply_change_status_style(cell, vuln_status)
+            col += 1
+
+        # Уровень критичности
+        cell = ws.cell(row=row_num, column=col, value=vuln['severity'])
+        cell.border = CELL_BORDER
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        col += 1
+
+        # Срок устранения
+        cell = ws.cell(row=row_num, column=col, value=vuln['remediation_period'])
+        cell.border = CELL_BORDER
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+        col += 1
+
+        # Статус
+        cell = ws.cell(row=row_num, column=col, value=vuln['status'])
+        cell.border = CELL_BORDER
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+        col += 1
+
+        # Комментарий (с информацией о версии для UPDATED)
+        cell = ws.cell(row=row_num, column=col, value=vuln['comment'])
+        cell.border = CELL_BORDER
+        cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+
+    # Для diff режимов объединяем ячейки пакета, версии и статуса пакета
+    if diff_mode != 'standard' and grouped_vulnerabilities:
+        # Пакет - колонка D (4), Версия - E (5), Статус пакета - F (6)
+        merge_package_cells(ws, grouped_vulnerabilities, start_row + 1, col_package=4, col_version=5, col_status=6)
+
+    # Добавляем выпадающие списки для колонки "Статус" только для полного отчета
+    if grouped_vulnerabilities and diff_mode == 'standard':
+        add_dropdown_lists(ws, len(grouped_vulnerabilities), start_row, workbook)
+
+    # Настраиваем ширину колонок
+    set_sca_column_widths(ws, diff_mode)
+
+    # Добавляем фильтры
+    if grouped_vulnerabilities:
+        last_col = len(headers)
+        ws.auto_filter.ref = f"A{start_row}:{get_column_letter(last_col)}{len(grouped_vulnerabilities) + start_row}"
+
+    # Замораживаем строку с заголовками
+    ws.freeze_panes = f'A{start_row + 1}'
+
+
 def set_sca_column_widths(worksheet, diff_mode='standard'):
     """
     Устанавливает ширину колонок для SCA листа
@@ -1050,7 +1205,7 @@ def set_sca_column_widths(worksheet, diff_mode='standard'):
             'A': 8,  # №
             'B': 40,  # Источник
             'C': 50,  # Путь
-            'D': 25,  # Пакет
+            'D': 35,  # Пакет
             'E': 20,  # Версия
             'F': 18,  # Статус пакета
             'G': 20,  # Идентификатор уязвимости
@@ -1058,7 +1213,7 @@ def set_sca_column_widths(worksheet, diff_mode='standard'):
             'I': 15,  # Уровень критичности
             'J': 15,  # Срок устранения
             'K': 25,  # Статус
-            'L': 40  # Комментарий
+            'L': 45  # Комментарий
         }
         for col, width in base_widths.items():
             worksheet.column_dimensions[col].width = width

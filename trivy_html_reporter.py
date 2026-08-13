@@ -1117,13 +1117,22 @@ def generate_vulnerability_card(vuln_data):
         }
         pkg_badge = pkg_badges.get(pkg_change_type, '')
         if pkg_badge:
+            # Проверяем, есть ли данные о версиях для UPDATED
+            version_info = ""
+            if pkg_change_type == 'updated':
+                version_change = base_vuln.get('_package_version_change', {})
+                old_ver = version_change.get('old_version')
+                new_ver = version_change.get('new_version')
+                if old_ver and new_ver:
+                    version_info = f' <span class="text-xs font-mono text-gray-600 dark:text-gray-400">({old_ver} → {new_ver})</span>'
+
             card_html += f"""
-      <div class="mb-3">
-        <div class="flex items-center gap-2 text-sm">
-          <span class="font-medium">Package change:</span> {pkg_badge}
-        </div>
-      </div>
-            """
+          <div class="mb-3">
+            <div class="flex items-center gap-2 text-sm">
+              <span class="font-medium">Package change:</span> {pkg_badge}{version_info}
+            </div>
+          </div>
+                """
 
     # Для УНИКАЛЬНЫХ уязвимостей (count = 1) - показываем Location и Source file в начале
     if vuln_data['count'] == 1 and vuln_data['paths']:
