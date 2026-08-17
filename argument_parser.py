@@ -5,46 +5,142 @@ from typing import Tuple, Optional, List
 from pathlib import Path
 
 
-def interactive_file_selection(scan_dir: Path, prompt: str, exclude: List[str] = None) -> Optional[str]:
-    """Интерактивный выбор файла"""
+def interactive_file_selection(scan_dir: Path, prompt: str, exclude: List[str] = None, start_dir: Path = None) -> \
+Optional[str]:
+    """
+    Интерактивный выбор файла с возможностью навигации по каталогам
+
+    Args:
+        scan_dir: Корневая директория поиска
+        prompt: Текст приглашения
+        exclude: Список имен файлов для исключения
+        start_dir: Начальная директория (если None, то scan_dir)
+
+    Returns:
+        Относительный путь к выбранному файлу или None
+    """
     exclude = exclude or []
+    current_dir = start_dir or scan_dir
 
-    files = []
-    for f in scan_dir.glob("*.json"):
-        if f.name not in ['config.json', *exclude]:
-            if not f.name.startswith('diff_report'):
-                files.append(f.name)
-
-    files.sort()
-
-    if not files:
-        print(f"❌ Нет подходящих JSON файлов в {scan_dir}")
-        return None
-
-    print(f"\n📂 {prompt}")
-    print("-" * 60)
-    for i, f in enumerate(files, 1):
-        try:
-            size = (scan_dir / f).stat().st_size / 1024
-            size_str = f"({size:.1f} KB)"
-        except:
-            size_str = ""
-        print(f"  {i:2}. {f} {size_str}")
-    print("  0. Отмена")
-    print("-" * 60)
+    # Проверяем, что текущая директория находится внутри scan_dir
+    try:
+        current_dir.relative_to(scan_dir)
+    except ValueError:
+        print(f"⚠️  Выход за пределы корневой директории, возврат в {scan_dir}")
+        current_dir = scan_dir
 
     while True:
+        # Собираем каталоги (только те, где есть JSON файлы)
+        dirs = []
+        for item in sorted(current_dir.iterdir()):
+            if item.is_dir() and not item.name.startswith('.'):
+                # Проверяем, есть ли в каталоге JSON файлы (кроме config.json и diff_report)
+                has_json = False
+                for f in item.glob("*.json"):
+                    if f.name != 'config.json' and not f.name.startswith('diff_report'):
+                        if exclude and f.name in exclude:
+                            continue
+                        has_json = True
+                        break
+                if has_json:
+                    dirs.append(('dir', item.name, item))
+
+        # Собираем JSON файлы
+        files = []
+        for item in sorted(current_dir.glob("*.json")):
+            if item.name != 'config.json' and not item.name.startswith('diff_report'):
+                if exclude and item.name in exclude:
+                    continue
+                files.append(('file', item.name, item))
+
+        # Если ничего нет - поднимаемся выше
+        if not dirs and not files:
+            if current_dir == scan_dir:
+                print("❌ Нет файлов для выбора в корневой директории")
+                return None
+            else:
+                print(f"⚠️  В директории {current_dir.name} нет файлов, поднимаемся выше...")
+                current_dir = current_dir.parent
+                continue
+
+        # Вывод
+        rel_path = current_dir.relative_to(scan_dir) if current_dir != scan_dir else Path('.')
+        print(f"\n📂 {prompt}")
+        print(f"   📁 Текущий путь: {rel_path}")
+        print("-" * 60)
+
+        # Собираем все элементы для отображения и маппинга индексов
+        display_items = []
+
+        # Навигация на уровень выше (если не в корне)
+        if current_dir != scan_dir:
+            display_items.append(('nav', '..', None))
+
+        # Каталоги
+        for dir_item in dirs:
+            display_items.append(dir_item)
+
+        # Файлы
+        for file_item in files:
+            display_items.append(file_item)
+
+        # Выводим все элементы с индексами
+        for i, (item_type, name, _) in enumerate(display_items, 1):
+            if item_type == 'nav':
+                print(f"  {i:2}. 🔙  [НА УРОВЕНЬ ВЫШЕ]")
+            elif item_type == 'dir':
+                print(f"  {i:2}. 📁 {name}/")
+            else:  # file
+                # Находим путь для размера
+                path = None
+                for _, _, p in files:
+                    if p.name == name:
+                        path = p
+                        break
+                if path:
+                    try:
+                        size = path.stat().st_size / 1024
+                        size_str = f"({size:.1f} KB)"
+                    except:
+                        size_str = ""
+                    print(f"  {i:2}. 📄 {name} {size_str}")
+                else:
+                    print(f"  {i:2}. 📄 {name}")
+
+        print("  0. Отмена")
+        print("-" * 60)
+
+        # Ввод
         try:
             choice = input("Введите номер (или 0 для отмены): ").strip()
+
             if choice == '0':
                 return None
             if choice == '':
                 continue
 
-            idx = int(choice) - 1
-            if 0 <= idx < len(files):
-                return files[idx]
-            print(f"❌ Неверный номер. Введите 1-{len(files)}")
+            num = int(choice)
+
+            # Проверяем диапазон
+            if num < 0 or num > len(display_items):
+                print(f"❌ Неверный номер. Введите 1-{len(display_items)} или 0 для отмены")
+                continue
+
+            # Получаем выбранный элемент
+            item_type, name, path = display_items[num - 1]
+
+            if item_type == 'nav':
+                # Поднимаемся на уровень выше
+                current_dir = current_dir.parent
+                continue
+            elif item_type == 'dir':
+                # Переходим в каталог
+                current_dir = path
+                continue
+            else:  # file
+                # Возвращаем относительный путь от scan_dir
+                return str(path.relative_to(scan_dir))
+
         except ValueError:
             print("❌ Введите число")
         except (KeyboardInterrupt, EOFError):
@@ -227,28 +323,27 @@ def get_diff_files(args, scan_dir: Path) -> Tuple[Optional[List[str]], bool]:
         print("\n" + "=" * 60)
         print("🔍 ИНТЕРАКТИВНЫЙ ВЫБОР ФАЙЛОВ ДЛЯ DIFF АНАЛИЗА")
         print("=" * 60)
-        print(f"📁 Директория: {scan_dir}")
-
-        # Проверяем наличие файлов
-        json_files = list(scan_dir.glob("*.json"))
-        json_files = [f for f in json_files
-                      if f.name != 'config.json'
-                      and not f.name.startswith('trivy_diff_output')]
-
-        if not json_files:
-            print("❌ Нет JSON файлов для анализа")
-            return None, True
+        print(f"📁 Корневая директория: {scan_dir}")
 
         # Выбор первого файла
         print("\n📌 Шаг 1: Выбор базового отчета (baseline)")
-        file1 = interactive_file_selection(scan_dir, "Выберите ПЕРВЫЙ файл (baseline):")
+        file1 = interactive_file_selection(
+            scan_dir,
+            "Выберите ПЕРВЫЙ файл (baseline):",
+            start_dir=scan_dir
+        )
         if not file1:
             print("❌ Операция отменена")
             return None, True
 
         # Выбор второго файла
         print(f"\n📌 Шаг 2: Выбор нового отчета (после изменений)")
-        file2 = interactive_file_selection(scan_dir, "Выберите ВТОРОЙ файл (новый):", exclude=[file1])
+        file2 = interactive_file_selection(
+            scan_dir,
+            "Выберите ВТОРОЙ файл (новый):",
+            exclude=[file1],
+            start_dir=scan_dir
+        )
         if not file2:
             print("❌ Операция отменена")
             return None, True
@@ -259,7 +354,6 @@ def get_diff_files(args, scan_dir: Path) -> Tuple[Optional[List[str]], bool]:
         print(f"  📄 Отчет 1 (baseline): {file1}")
         print(f"  📄 Отчет 2 (новый):    {file2}")
 
-        # Проверяем, нужны ли отчеты
         if args.html or args.excel:
             print("\n📋 Дополнительные режимы:")
             if args.html:
@@ -278,7 +372,9 @@ def get_diff_files(args, scan_dir: Path) -> Tuple[Optional[List[str]], bool]:
     if len(args.diff) == 2:
         missing = []
         for f in args.diff:
-            if not (scan_dir / f).exists():
+            # Проверяем существование файла (относительно scan_dir)
+            file_path = scan_dir / f
+            if not file_path.exists():
                 missing.append(f)
 
         if missing:
