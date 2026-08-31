@@ -449,8 +449,8 @@ def main():
             sys.exit(1)
 
         print(f"📂 Loading reports:")
-        print(f"  Report 1 (baseline): {args[0]}")
-        print(f"  Report 2 (new): {args[1]}")
+        print(f"  Report 1 (старый отчет): {args[0]}")
+        print(f"  Report 2 (новый отчет): {args[1]}")
         print()
 
         analyzer = TrivyDiffAnalyzer(args[0], args[1], debug)

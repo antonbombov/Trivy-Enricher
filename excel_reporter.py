@@ -641,7 +641,7 @@ def group_vulnerabilities_by_artifact(vulnerabilities):
     """
     Группирует уязвимости по уникальному артефакту (источник + путь + пакет + версия)
     Объединяет все CVE, найденные для одного и того же артефакта
-    (используется ТОЛЬКО для standard режима - без diff)
+    (используется для standard режима - без diff)
     """
     from collections import defaultdict
 
@@ -731,22 +731,25 @@ def group_vulnerabilities_by_artifact(vulnerabilities):
 
 def group_vulnerabilities_by_package_for_diff(vulnerabilities):
     """
-    Группирует уязвимости по пакету для diff режимов.
-    Пакет и версия - объединенные ячейки.
+    Группирует уязвимости для diff режимов.
+    Источник, путь, пакет, версия и статус пакета - объединенные ячейки.
     Каждый CVE - отдельная строка со своим статусом.
+
+    Группировка по: источник + путь + пакет + версия
+    Но каждая уязвимость (CVE) идет отдельной строкой!
     """
     from collections import defaultdict
 
-    # Группируем по источнику + пакету + версии (путь игнорируем для группировки)
+    # Группируем по источнику + пути + пакету + версии
     groups = defaultdict(list)
 
     for vuln in vulnerabilities:
-        # Ключ группировки: источник + пакет + версия
-        key = (vuln['source'], vuln['package'], vuln['version'])
+        # КЛЮЧ: источник + путь + пакет + версия (ВСЕ ВМЕСТЕ!)
+        key = (vuln['source'], vuln['path'], vuln['package'], vuln['version'])
         groups[key].append(vuln)
 
     result = []
-    for (source, package, version), vulns in groups.items():
+    for (source, path, package, version), vulns in groups.items():
         # Определяем статус пакета (должен быть одинаковым для всех CVE в группе)
         package_change_type = None
         version_change = ''
@@ -762,10 +765,7 @@ def group_vulnerabilities_by_package_for_diff(vulnerabilities):
         severity_order = {'CRITICAL': 4, 'HIGH': 3, 'MEDIUM': 2, 'LOW': 1, 'UNKNOWN': 0}
         sorted_vulns = sorted(vulns, key=lambda x: severity_order.get(x['severity'], 0), reverse=True)
 
-        # Берем путь из первой уязвимости (для отображения)
-        first_path = sorted_vulns[0].get('path', '') if sorted_vulns else ''
-
-        # Для каждого CVE создаем отдельную строку
+        # Для каждого CVE создаем отдельную строку с ОДИНАКОВЫМИ источником и путем
         for vuln in sorted_vulns:
             # Формируем комментарий с информацией об изменении версии (для UPDATED)
             comment = vuln.get('comment', '')
@@ -776,14 +776,14 @@ def group_vulnerabilities_by_package_for_diff(vulnerabilities):
                     comment = f"Версия пакета: {version_change}"
 
             result.append({
-                'source': source,
-                'path': first_path,  # Используем путь из первой уязвимости
-                'package': package,
-                'version': version,
+                'source': source,  # ОДИНАКОВОЕ для всех CVE в группе
+                'path': path,  # ОДИНАКОВОЕ для всех CVE в группе
+                'package': package,  # ОДИНАКОВОЕ для всех CVE в группе
+                'version': version,  # ОДИНАКОВОЕ для всех CVE в группе
                 'package_change_type': package_change_type,
-                'vulnerability_id': vuln['vulnerability_id'],
-                'vuln_status': vuln.get('vuln_change_type', ''),  # Индивидуальный статус CVE
-                'severity': vuln['severity'],
+                'vulnerability_id': vuln['vulnerability_id'],  # УНИКАЛЬНОЕ для каждой CVE
+                'vuln_status': vuln.get('vuln_change_type', ''),  # УНИКАЛЬНОЕ для каждой CVE
+                'severity': vuln['severity'],  # МОЖЕТ БЫТЬ РАЗНЫМ
                 'remediation_period': vuln['remediation_period'],
                 'status': vuln.get('status', ''),
                 'comment': comment
@@ -931,21 +931,35 @@ def add_dropdown_lists(worksheet, num_rows, start_row, workbook):
 
 def merge_package_cells(worksheet, data, start_row, col_package, col_version, col_status=None):
     """
-    Объединяет ячейки для одинаковых пакетов, версий и статуса пакета
+    Объединяет ячейки для одинаковых источник + путь + пакет + версия
     """
     if not data:
         return
 
     current_key = None
     start_merge_row = start_row
-    current_status = None
 
     for i, vuln in enumerate(data, start_row):
-        key = (vuln['package'], vuln['version'])
+        # КЛЮЧ ДЛЯ ОБЪЕДИНЕНИЯ: источник + путь + пакет + версия
+        key = (vuln['source'], vuln['path'], vuln['package'], vuln['version'])
 
         if key != current_key:
             # Закрываем предыдущую группу
             if current_key is not None and start_merge_row < i:
+                # Объединяем ИСТОЧНИК (колонка B)
+                worksheet.merge_cells(
+                    start_row=start_merge_row,
+                    start_column=2,
+                    end_row=i - 1,
+                    end_column=2
+                )
+                # Объединяем ПУТЬ (колонка C)
+                worksheet.merge_cells(
+                    start_row=start_merge_row,
+                    start_column=3,
+                    end_row=i - 1,
+                    end_column=3
+                )
                 # Объединяем пакет
                 worksheet.merge_cells(
                     start_row=start_merge_row,
@@ -971,7 +985,7 @@ def merge_package_cells(worksheet, data, start_row, col_package, col_version, co
 
                 # Центрируем объединенные ячейки
                 for row in range(start_merge_row, i):
-                    for col in [col_package, col_version]:
+                    for col in [2, 3, col_package, col_version]:
                         cell = worksheet.cell(row=row, column=col)
                         cell.alignment = Alignment(horizontal='center', vertical='center')
                     if col_status:
@@ -980,11 +994,24 @@ def merge_package_cells(worksheet, data, start_row, col_package, col_version, co
 
             current_key = key
             start_merge_row = i
-            current_status = vuln.get('package_change_type', '')
 
         # Для последней группы
         if i == len(data) + start_row - 1:
             if start_merge_row <= i:
+                # Объединяем ИСТОЧНИК
+                worksheet.merge_cells(
+                    start_row=start_merge_row,
+                    start_column=2,
+                    end_row=i,
+                    end_column=2
+                )
+                # Объединяем ПУТЬ
+                worksheet.merge_cells(
+                    start_row=start_merge_row,
+                    start_column=3,
+                    end_row=i,
+                    end_column=3
+                )
                 # Объединяем пакет
                 worksheet.merge_cells(
                     start_row=start_merge_row,
@@ -1010,7 +1037,7 @@ def merge_package_cells(worksheet, data, start_row, col_package, col_version, co
 
                 # Центрируем объединенные ячейки
                 for row in range(start_merge_row, i + 1):
-                    for col in [col_package, col_version]:
+                    for col in [2, 3, col_package, col_version]:
                         cell = worksheet.cell(row=row, column=col)
                         cell.alignment = Alignment(horizontal='center', vertical='center')
                     if col_status:
@@ -1023,14 +1050,15 @@ def add_sca_sheet(workbook, enriched_trivy_path, sheet_name="SCA Анализ", 
     Добавляет лист с SCA анализом из Trivy
 
     Для standard режима:
-        - Группировка по источнику + пути + пакету + версии
+        - Группировка по (источник + путь + пакет + версия)
         - Все CVE склеиваются в одну ячейку через перенос строки
-        - Используется старая логика group_vulnerabilities_by_artifact()
+        - Используется group_vulnerabilities_by_artifact()
 
     Для diff режимов (full, new, removed):
-        - Группировка по пакету + версии
+        - Группировка по (источник + путь + пакет + версия) для объединения ячеек
         - Каждый CVE - отдельная строка со своим статусом
         - Пакет, версия и статус пакета - объединенные ячейки
+        - Используется group_vulnerabilities_by_package_for_diff()
     """
     # Загружаем обогащенный отчет
     with open(enriched_trivy_path, 'r', encoding='utf-8-sig') as f:
@@ -1045,9 +1073,11 @@ def add_sca_sheet(workbook, enriched_trivy_path, sheet_name="SCA Анализ", 
     # Группируем в зависимости от режима
     if diff_mode == 'standard':
         # Старая логика - группировка по артефакту (источник + путь + пакет + версия)
+        # Все CVE склеиваются в одну ячейку
         grouped_vulnerabilities = group_vulnerabilities_by_artifact(all_vulnerabilities)
     else:
-        # Новая логика для diff - группировка по пакету, каждый CVE отдельно
+        # Для diff - группировка по артефакту, но каждая CVE отдельной строкой
+        # Пакет, версия и статус пакета объединяются
         grouped_vulnerabilities = group_vulnerabilities_by_package_for_diff(all_vulnerabilities)
 
     # Получаем имя артефакта и текущую дату
@@ -1103,13 +1133,13 @@ def add_sca_sheet(workbook, enriched_trivy_path, sheet_name="SCA Анализ", 
         cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
         col += 1
 
-        # Пакет (будет объединен позже для diff режимов)
+        # Пакет
         cell = ws.cell(row=row_num, column=col, value=vuln['package'])
         cell.border = CELL_BORDER
         cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
         col += 1
 
-        # Версия (будет объединена позже для diff режимов)
+        # Версия
         cell = ws.cell(row=row_num, column=col, value=vuln['version'])
         cell.border = CELL_BORDER
         cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
@@ -1117,7 +1147,7 @@ def add_sca_sheet(workbook, enriched_trivy_path, sheet_name="SCA Анализ", 
 
         # Для diff режимов добавляем колонку со статусом пакета
         if diff_mode != 'standard':
-            # Статус пакета (будет объединен позже)
+            # Статус пакета
             pkg_status = vuln.get('package_change_type', '')
             cell = ws.cell(row=row_num, column=col, value=pkg_status.upper() if pkg_status else '')
             cell.border = CELL_BORDER
@@ -1165,14 +1195,13 @@ def add_sca_sheet(workbook, enriched_trivy_path, sheet_name="SCA Анализ", 
         cell.alignment = Alignment(horizontal='center', vertical='center')
         col += 1
 
-        # Комментарий (с информацией о версии для UPDATED)
+        # Комментарий
         cell = ws.cell(row=row_num, column=col, value=vuln['comment'])
         cell.border = CELL_BORDER
         cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
-    # Для diff режимов объединяем ячейки пакета, версии и статуса пакета
+    # Для diff режимов объединяем ячейки
     if diff_mode != 'standard' and grouped_vulnerabilities:
-        # Пакет - колонка D (4), Версия - E (5), Статус пакета - F (6)
         merge_package_cells(ws, grouped_vulnerabilities, start_row + 1, col_package=4, col_version=5, col_status=6)
 
     # Добавляем выпадающие списки для колонки "Статус" только для полного отчета
@@ -1202,18 +1231,18 @@ def set_sca_column_widths(worksheet, diff_mode='standard'):
     else:
         # С diff - 12 колонок
         base_widths = {
-            'A': 8,  # №
-            'B': 40,  # Источник
-            'C': 50,  # Путь
-            'D': 35,  # Пакет
-            'E': 20,  # Версия
-            'F': 18,  # Статус пакета
-            'G': 20,  # Идентификатор уязвимости
-            'H': 18,  # Статус уязвимости
-            'I': 15,  # Уровень критичности
-            'J': 15,  # Срок устранения
-            'K': 25,  # Статус
-            'L': 45  # Комментарий
+            'A': 8,
+            'B': 40,
+            'C': 50,
+            'D': 35,
+            'E': 20,
+            'F': 18,
+            'G': 20,
+            'H': 18,
+            'I': 15,
+            'J': 15,
+            'K': 25,
+            'L': 45
         }
         for col, width in base_widths.items():
             worksheet.column_dimensions[col].width = width
@@ -1236,10 +1265,10 @@ def apply_change_status_style(cell, status):
 
     # Цвета для статусов
     status_colors = {
-        'new': 'ffc7ce',  # Плохой - Красный
-        'unchanged': 'ffeb9c',  # Нейтральный - Желтый/Оранжевый
-        'updated': '70a1db',  # Обычный/Ввод/Вывод - Синий
-        'removed': 'c6efce'  # Хороший - Зеленый
+        'new': 'ffc7ce',
+        'unchanged': 'ffeb9c',
+        'updated': '70a1db',
+        'removed': 'c6efce'
     }
 
     color = status_colors.get(status_lower)

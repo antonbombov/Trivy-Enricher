@@ -326,10 +326,10 @@ def get_diff_files(args, scan_dir: Path) -> Tuple[Optional[List[str]], bool]:
         print(f"📁 Корневая директория: {scan_dir}")
 
         # Выбор первого файла
-        print("\n📌 Шаг 1: Выбор базового отчета (baseline)")
+        print("\n📌 Шаг 1: Выбор первого отчета (старый)")
         file1 = interactive_file_selection(
             scan_dir,
-            "Выберите ПЕРВЫЙ файл (baseline):",
+            "Выберите ПЕРВЫЙ файл (старый отчет):",
             start_dir=scan_dir
         )
         if not file1:
@@ -340,7 +340,7 @@ def get_diff_files(args, scan_dir: Path) -> Tuple[Optional[List[str]], bool]:
         print(f"\n📌 Шаг 2: Выбор нового отчета (после изменений)")
         file2 = interactive_file_selection(
             scan_dir,
-            "Выберите ВТОРОЙ файл (новый):",
+            "Выберите ВТОРОЙ файл (новый отчет):",
             exclude=[file1],
             start_dir=scan_dir
         )
@@ -351,8 +351,8 @@ def get_diff_files(args, scan_dir: Path) -> Tuple[Optional[List[str]], bool]:
         print("\n" + "=" * 60)
         print("✅ ВЫБРАНЫ ФАЙЛЫ ДЛЯ СРАВНЕНИЯ:")
         print("=" * 60)
-        print(f"  📄 Отчет 1 (baseline): {file1}")
-        print(f"  📄 Отчет 2 (новый):    {file2}")
+        print(f"  📄 Отчет 1 (старый): {file1}")
+        print(f"  📄 Отчет 2 (новый):  {file2}")
 
         if args.html or args.excel:
             print("\n📋 Дополнительные режимы:")

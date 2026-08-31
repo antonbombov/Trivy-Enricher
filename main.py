@@ -57,8 +57,8 @@ def run_diff_mode(scan_dir: Path, file1: str, file2: str) -> Optional[Path]:
         return None
 
     print(f"\n📂 Сравниваем отчеты:")
-    print(f"  Отчет 1 (baseline): {report1_path.name}")
-    print(f"  Отчет 2 (новый): {report2_path.name}")
+    print(f"  Отчет 1 (старый отчет): {report1_path.name}")
+    print(f"  Отчет 2 (новый отчет): {report2_path.name}")
     print()
 
     try:
@@ -82,7 +82,7 @@ def run_diff_mode(scan_dir: Path, file1: str, file2: str) -> Optional[Path]:
 
 def cleanup_logs(output_dir):
     """
-    Очищает папку с логами перед запуском
+    Очищает папку с логами перед запуском (без вывода в консоль)
     """
     log_dir = output_dir / "logs"
 
@@ -91,13 +91,10 @@ def cleanup_logs(output_dir):
             for log_file in log_dir.glob("*.log"):
                 try:
                     log_file.unlink()
-                    print(f"Удален лог: {log_file.name}")
-                except Exception as e:
-                    print(f"Не удалось удалить {log_file.name}: {e}")
-        except Exception as e:
-            print(f"Ошибка при очистке логов: {e}")
-    else:
-        print(f"Папка логов не существует, создадим при необходимости: {log_dir}")
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
 
 def generate_html_report(enriched_file, output_dir, cache_dir):
@@ -303,11 +300,9 @@ def main():
             print(f"   🧹 Удалено старых файлов из кэша: {deleted_count}")
 
         if not only_cache:
-            print(f"\n🧹 Очистка старых логов...")
             cleanup_logs(output_dir)
-            print("   Очистка логов завершена")
         else:
-            print(f"\n💾 Режим only-cache: очистка логов пропущена (вызовы SploitScan не производятся)")
+            pass
 
     print(f"\n📁 Директории:")
     print(f"   📂 Входные отчеты: {scan_dir}")
