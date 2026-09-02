@@ -37,21 +37,33 @@ Optional[str]:
                 # Проверяем, есть ли в каталоге JSON файлы (кроме config.json и diff_report)
                 has_json = False
                 for f in item.glob("*.json"):
-                    if f.name != 'config.json' and not f.name.startswith('diff_report'):
+                    if f.name == 'config.json':
+                        continue
+                    # Исключаем diff отчеты (старый формат diff_report*.json и новый формат *_diff*.json)
+                    if f.name.startswith('diff_report') or '_diff' in f.name:
                         if exclude and f.name in exclude:
                             continue
-                        has_json = True
-                        break
+                        continue
+                    if exclude and f.name in exclude:
+                        continue
+                    has_json = True
+                    break
                 if has_json:
                     dirs.append(('dir', item.name, item))
 
         # Собираем JSON файлы
         files = []
         for item in sorted(current_dir.glob("*.json")):
-            if item.name != 'config.json' and not item.name.startswith('diff_report'):
+            if item.name == 'config.json':
+                continue
+            # Исключаем diff отчеты (старый формат diff_report*.json и новый формат *_diff*.json)
+            if item.name.startswith('diff_report') or '_diff' in item.name:
                 if exclude and item.name in exclude:
                     continue
-                files.append(('file', item.name, item))
+                continue
+            if exclude and item.name in exclude:
+                continue
+            files.append(('file', item.name, item))
 
         # Если ничего нет - поднимаемся выше
         if not dirs and not files:

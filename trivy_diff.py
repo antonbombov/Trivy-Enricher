@@ -422,11 +422,15 @@ class TrivyDiffAnalyzer:
         else:
             output_dir = Path(output_dir)
 
-        output_file = output_dir / f"{prefix}.json"
+        # Формируем имя из второго отчета (нового) + постфикс _diff
+        report2_path = Path(self.report2_path)
+        base_name = report2_path.stem  # Имя без расширения
+        output_file = output_dir / f"{base_name}_diff.json"
 
+        # Если файл с таким именем уже существует, добавляем timestamp
         if output_file.exists():
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_file = output_dir / f"{prefix}_{timestamp}.json"
+            output_file = output_dir / f"{base_name}_diff_{timestamp}.json"
 
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(diff_report, f, indent=2, ensure_ascii=False)

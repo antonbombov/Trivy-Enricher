@@ -67,7 +67,7 @@ def run_diff_mode(scan_dir: Path, file1: str, file2: str) -> Optional[Path]:
         analyzer.print_summary()
 
         # Сохраняем diff отчет в scan_directory
-        output_file = analyzer.save_diff_report(output_dir=scan_dir, prefix="diff_report")
+        output_file = analyzer.save_diff_report(output_dir=scan_dir)
 
         print(f"\n💾 Diff отчет сохранен: {output_file}")
         return Path(output_file)
@@ -234,7 +234,7 @@ def main():
         print("\n❌ Операция отменена пользователем")
         return
 
-    # Если diff активен - запускаем diff анализ (просто сохраняем отчет в scan_dir)
+    # Если diff активен - запускаем diff анализ
     if diff_active and diff_files is not None:
         diff_report = run_diff_mode(scan_dir, diff_files[0], diff_files[1])
         if not diff_report:
@@ -243,7 +243,12 @@ def main():
             if not any([generate_html, generate_excel_flag, ptai_only]):
                 return
 
-    # Проверяем, что хоть что-то указано
+        # Если diff выполнен успешно и нет других режимов - завершаем работу
+        if not any([generate_html, generate_excel_flag, ptai_only]):
+            print("\n✨ VIBECHECKER завершил работу ✨")
+            return
+
+    # Проверяем, что хоть что-то указано (кроме diff)
     if not any([generate_html, generate_excel_flag, ptai_only]):
         print("\n❌ Ошибка: не указан режим работы")
         print("   Используйте: -html, -excel, или оба")
