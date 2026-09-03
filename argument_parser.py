@@ -3,10 +3,10 @@ import argparse
 import sys
 from typing import Tuple, Optional, List
 from pathlib import Path
+from datetime import datetime
 
 
-def interactive_file_selection(scan_dir: Path, prompt: str, exclude: List[str] = None, start_dir: Path = None) -> \
-Optional[str]:
+def interactive_file_selection(scan_dir: Path, prompt: str, exclude: List[str] = None, start_dir: Path = None) -> Optional[str]:
     """
     Интерактивный выбор файла с возможностью навигации по каталогам
 
@@ -165,7 +165,7 @@ def parse_arguments():
 
     parser = argparse.ArgumentParser(
         description='Trivy Enricher - обогащение отчетов Trivy данными SploitScan',
-        usage='python main.py [-h] [-html] [-excel] [-skip-enrich] [-only-cache] [-ptai-only] [-diff [REPORT1 REPORT2]]',
+        usage='python main.py [-h] [-html] [-excel] [-skip-enrich] [-only-cache] [-ptai-only] [-diff [REPORT1 REPORT2 [START_DATE [END_DATE]]]]',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Примеры использования:
@@ -173,8 +173,10 @@ def parse_arguments():
   python main.py -excel                          # Только Excel отчеты
   python main.py -html -excel                    # Оба типа отчетов
   python main.py -html -excel -skip-enrich       # Без обогащения
-  python main.py -diff                           # Интерактивный выбор для diff
-  python main.py -diff image1.json image2.json   # Diff с указанием файлов
+  python main.py -diff                           # Интерактивный выбор (файлы + даты)
+  python main.py -diff old.json new.json         # Интерактивный ввод дат
+  python main.py -diff old.json new.json 2026-09-01 2026-12-01  # Неинтерактивный с датами
+  python main.py -diff old.json new.json - -     # Неинтерактивный, даты из CreatedAt
   python main.py -diff -html -excel              # Diff + HTML + Excel
   python main.py -ptai-only -excel               # Только PTAI в Excel
   python main.py -h                              # Показать справку
@@ -185,7 +187,9 @@ def parse_arguments():
   -skip-enrich   Пропустить обогащение SploitScan
   -only-cache    Использовать только кэш (без вызова SploitScan)
   -ptai-only     Только Excel отчеты из PTAI (без Trivy)
-  -diff          Выполнить diff анализ (0 или 2 файла)
+  -diff          Выполнить diff анализ (0-4 аргумента)
+                 -diff old.json new.json 2026-09-01 2026-12-01  - с датами
+                 -diff old.json new.json - -              - даты из CreatedAt
   -h             Показать справку
         """
     )
@@ -226,7 +230,7 @@ def parse_arguments():
     parser.add_argument(
         '-diff',
         nargs='*',
-        help='Выполнить diff анализ (0 или 2 файла)'
+        help='Выполнить diff анализ (0-4 аргумента: файл1 файл2 [дата_выявления [дата_устранения]])'
     )
 
     if len(sys.argv) == 1:
@@ -252,12 +256,32 @@ def parse_arguments():
         # Проверяем количество файлов
         if args.diff is None:
             args.diff = []  # Интерактивный режим
-        elif len(args.diff) > 0 and len(args.diff) != 2:
-            print("❌ Ошибка: для -diff нужно указать 0 или 2 файла")
+        elif len(args.diff) > 4:
+            print("❌ Ошибка: для -diff нужно указать 0-4 аргумента")
             print("   Примеры:")
-            print("     python main.py -diff                    # Интерактивный выбор")
-            print("     python main.py -diff file1.json file2.json  # С указанием файлов")
+            print("     python main.py -diff                                      # Интерактивный выбор")
+            print("     python main.py -diff file1.json file2.json                # Интерактивный ввод дат")
+            print("     python main.py -diff file1.json file2.json 2026-09-01     # С датой выявления")
+            print("     python main.py -diff file1.json file2.json 2026-09-01 2026-12-01  # С обеими датами")
+            print("     python main.py -diff file1.json file2.json - -            # Даты из CreatedAt")
             sys.exit(1)
+
+        # Проверяем формат дат, если они указаны (не прочерк)
+        if len(args.diff) >= 3 and args.diff[2] != '-':
+            try:
+                datetime.strptime(args.diff[2], '%Y-%m-%d')
+            except ValueError:
+                print(f"❌ Ошибка: неверный формат даты выявления '{args.diff[2]}'")
+                print("   Используйте формат ГГГГ-ММ-ДД (например: 2026-09-01) или '-' для пропуска")
+                sys.exit(1)
+
+        if len(args.diff) >= 4 and args.diff[3] != '-':
+            try:
+                datetime.strptime(args.diff[3], '%Y-%m-%d')
+            except ValueError:
+                print(f"❌ Ошибка: неверный формат даты устранения '{args.diff[3]}'")
+                print("   Используйте формат ГГГГ-ММ-ДД (например: 2026-12-01) или '-' для пропуска")
+                sys.exit(1)
 
         # -ptai-only несовместим с diff
         if args.ptai_only:
@@ -315,22 +339,24 @@ def get_report_types(args) -> Tuple[bool, bool, bool, bool, bool]:
     return args.html, args.excel, args.skip_enrich, args.only_cache, args.ptai_only
 
 
-def get_diff_files(args, scan_dir: Path) -> Tuple[Optional[List[str]], bool]:
+def get_diff_files(args, scan_dir: Path) -> Tuple[Optional[List[str]], bool, Optional[str], Optional[str]]:
     """
-    Возвращает список файлов для diff анализа и флаг, что diff активен
+    Возвращает список файлов для diff анализа, флаг и даты
 
     Returns:
-        (files, is_diff_active)
+        (files, is_diff_active, start_date, end_date)
         files: список из 2 файлов или None
         is_diff_active: True если diff режим активен
+        start_date: строка с датой выявления или None
+        end_date: строка с датой устранения или None
     """
     import sys
     diff_active = '-diff' in sys.argv
 
     if not diff_active:
-        return None, False
+        return None, False, None, None
 
-    # Если diff активен, но файлов нет - интерактивный режим
+    # Если diff активен, но файлов нет - интерактивный режим (выбор файлов + даты)
     if args.diff is None or len(args.diff) == 0:
         print("\n" + "=" * 60)
         print("🔍 ИНТЕРАКТИВНЫЙ ВЫБОР ФАЙЛОВ ДЛЯ DIFF АНАЛИЗА")
@@ -345,11 +371,10 @@ def get_diff_files(args, scan_dir: Path) -> Tuple[Optional[List[str]], bool]:
             start_dir=scan_dir
         )
         if not file1:
-            print("❌ Операция отменена")
-            return None, True
+            return None, True, None, None
 
         # Выбор второго файла
-        print(f"\n📌 Шаг 2: Выбор нового отчета (после изменений)")
+        print(f"\n📌 Шаг 2: Выбор второго отчета (новый)")
         file2 = interactive_file_selection(
             scan_dir,
             "Выберите ВТОРОЙ файл (новый отчет):",
@@ -357,52 +382,164 @@ def get_diff_files(args, scan_dir: Path) -> Tuple[Optional[List[str]], bool]:
             start_dir=scan_dir
         )
         if not file2:
-            print("❌ Операция отменена")
-            return None, True
+            return None, True, None, None
+
+        # Ввод даты выявления
+        print("\n📅 Шаг 3: Введите дату выявления уязвимостей (дату утверждения протокола)")
+        print("   Формат: ГГГГ-ММ-ДД (например: 2026-09-01)")
+        print("   Если оставить пустым — будет использована дата из ПЕРВОГО отчета (CreatedAt)")
+        start_date = input("Дата выявления (или Enter для использования CreatedAt): ").strip()
+        if not start_date:
+            start_date = None
+        else:
+            try:
+                datetime.strptime(start_date, '%Y-%m-%d')
+            except ValueError:
+                print(f"❌ Ошибка: неверный формат даты '{start_date}'")
+                print("   Используйте формат ГГГГ-ММ-ДД")
+                return None, True, None, None
+
+        # Ввод даты устранения
+        print("\n📅 Шаг 4: Введите дату устранения уязвимостей")
+        print("   Формат: ГГГГ-ММ-ДД (например: 2026-12-01)")
+        print("   Если оставить пустым — будет использована дата из ВТОРОГО отчета (CreatedAt)")
+        end_date = input("Дата устранения (или Enter для использования CreatedAt): ").strip()
+        if not end_date:
+            end_date = None
+        else:
+            try:
+                datetime.strptime(end_date, '%Y-%m-%d')
+            except ValueError:
+                print(f"❌ Ошибка: неверный формат даты '{end_date}'")
+                print("   Используйте формат ГГГГ-ММ-ДД")
+                return None, True, None, None
 
         print("\n" + "=" * 60)
         print("✅ ВЫБРАНЫ ФАЙЛЫ ДЛЯ СРАВНЕНИЯ:")
         print("=" * 60)
         print(f"  📄 Отчет 1 (старый): {file1}")
         print(f"  📄 Отчет 2 (новый):  {file2}")
-
-        if args.html or args.excel:
-            print("\n📋 Дополнительные режимы:")
-            if args.html:
-                print("  - Будет создан HTML отчет по результатам diff")
-            if args.excel:
-                print("  - Будет создан Excel отчет по результатам diff")
+        if start_date:
+            print(f"  📅 Дата выявления: {start_date}")
+        else:
+            print(f"  📅 Дата выявления: из ПЕРВОГО отчета (CreatedAt)")
+        if end_date:
+            print(f"  📅 Дата устранения: {end_date}")
+        else:
+            print(f"  📅 Дата устранения: из ВТОРОГО отчета (CreatedAt)")
 
         confirm = input("\nПродолжить? (y/N): ").strip().lower()
         if confirm not in ['y', 'yes', 'д', 'да']:
-            print("❌ Отменено")
-            return None, True
+            return None, True, None, None
 
-        return [file1, file2], True
+        return [file1, file2], True, start_date, end_date
 
-    # Если файлы указаны - проверяем
-    if len(args.diff) == 2:
+    # Если файлы указаны
+    if len(args.diff) >= 2:
+        # Проверяем существование файлов
         missing = []
-        for f in args.diff:
-            # Проверяем существование файла (относительно scan_dir)
+        for f in args.diff[:2]:
             file_path = scan_dir / f
             if not file_path.exists():
                 missing.append(f)
 
         if missing:
             print(f"❌ Ошибка: файлы не найдены: {', '.join(missing)}")
-            return None, True
+            return None, True, None, None
 
-        return args.diff, True
+        # ===== ИНТЕРАКТИВНЫЙ ВВОД ДАТ (если только 2 файла) =====
+        if len(args.diff) == 2:
+            print("\n" + "=" * 60)
+            print("🔍 ИНТЕРАКТИВНЫЙ ВВОД ДАТ ДЛЯ DIFF АНАЛИЗА")
+            print("=" * 60)
+            print(f"  📄 Отчет 1 (старый): {args.diff[0]}")
+            print(f"  📄 Отчет 2 (новый):  {args.diff[1]}")
 
-    return None, True
+            # Ввод даты выявления
+            print("\n📅 Шаг 1: Введите дату выявления уязвимостей (дату утверждения протокола)")
+            print("   Формат: ГГГГ-ММ-ДД (например: 2026-09-01)")
+            print("   Если оставить пустым — будет использована дата из ПЕРВОГО отчета (CreatedAt)")
+            start_date = input("Дата выявления (или Enter для использования CreatedAt): ").strip()
+            if not start_date:
+                start_date = None
+            else:
+                try:
+                    datetime.strptime(start_date, '%Y-%m-%d')
+                except ValueError:
+                    print(f"❌ Ошибка: неверный формат даты '{start_date}'")
+                    print("   Используйте формат ГГГГ-ММ-ДД")
+                    return None, True, None, None
+
+            # Ввод даты устранения
+            print("\n📅 Шаг 2: Введите дату устранения уязвимостей")
+            print("   Формат: ГГГГ-ММ-ДД (например: 2026-12-01)")
+            print("   Если оставить пустым — будет использована дата из ВТОРОГО отчета (CreatedAt)")
+            end_date = input("Дата устранения (или Enter для использования CreatedAt): ").strip()
+            if not end_date:
+                end_date = None
+            else:
+                try:
+                    datetime.strptime(end_date, '%Y-%m-%d')
+                except ValueError:
+                    print(f"❌ Ошибка: неверный формат даты '{end_date}'")
+                    print("   Используйте формат ГГГГ-ММ-ДД")
+                    return None, True, None, None
+
+            print("\n" + "=" * 60)
+            print("✅ ВЫБРАНЫ ДАТЫ ДЛЯ СРАВНЕНИЯ:")
+            print("=" * 60)
+            if start_date:
+                print(f"  📅 Дата выявления: {start_date}")
+            else:
+                print(f"  📅 Дата выявления: из ПЕРВОГО отчета (CreatedAt)")
+            if end_date:
+                print(f"  📅 Дата устранения: {end_date}")
+            else:
+                print(f"  📅 Дата устранения: из ВТОРОГО отчета (CreatedAt)")
+
+            confirm = input("\nПродолжить? (y/N): ").strip().lower()
+            if confirm not in ['y', 'yes', 'д', 'да']:
+                return None, True, None, None
+
+            return args.diff[:2], True, start_date, end_date
+
+        # ===== НЕИНТЕРАКТИВНЫЙ РЕЖИМ (3 или 4 аргумента) =====
+        # 3-й параметр — дата выявления (если не прочерк)
+        if len(args.diff) >= 3 and args.diff[2] != '-':
+            start_date = args.diff[2]
+            try:
+                datetime.strptime(start_date, '%Y-%m-%d')
+            except ValueError:
+                print(f"❌ Ошибка: неверный формат даты выявления '{start_date}'")
+                print("   Используйте формат ГГГГ-ММ-ДД или '-' для пропуска")
+                return None, True, None, None
+        else:
+            start_date = None  # будет взято из CreatedAt первого отчета
+
+        # 4-й параметр — дата устранения (если не прочерк)
+        if len(args.diff) >= 4 and args.diff[3] != '-':
+            end_date = args.diff[3]
+            try:
+                datetime.strptime(end_date, '%Y-%m-%d')
+            except ValueError:
+                print(f"❌ Ошибка: неверный формат даты устранения '{end_date}'")
+                print("   Используйте формат ГГГГ-ММ-ДД или '-' для пропуска")
+                return None, True, None, None
+        else:
+            end_date = None  # будет взято из CreatedAt второго отчета
+
+        return args.diff[:2], True, start_date, end_date
+
+    return None, True, None, None
 
 
 def print_usage():
     print("Trivy Enricher - обогащение отчетов Trivy данными SploitScan")
     print("=" * 60)
-    print("Использование: python main.py [-h] [-html] [-excel] [-skip-enrich] [-diff [REPORT1 REPORT2]]")
+    print("Использование: python main.py [-h] [-html] [-excel] [-skip-enrich] [-diff [REPORT1 REPORT2 [START_DATE [END_DATE]]]]")
     print("\n  python main.py -html -excel          # Обычный режим")
     print("  python main.py -diff                  # Интерактивный выбор")
-    print("  python main.py -diff file1 file2      # Сравнение двух файлов")
+    print("  python main.py -diff file1 file2      # Интерактивный ввод дат")
+    print("  python main.py -diff file1 file2 2026-09-01 2026-12-01  # С датами")
+    print("  python main.py -diff file1 file2 - -  # Даты из CreatedAt")
     print("  python main.py -diff -html -excel    # Diff + генерация отчетов")

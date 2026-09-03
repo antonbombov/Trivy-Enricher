@@ -5,6 +5,7 @@ Trivy Diff Analyzer
 - Docker-образы (идентификация по PkgName)
 - JAR-сканирования (идентификация по PkgName + UID)
 - Поиск пакетов по имени в секции Packages для определения UPDATED
+- Расчет остаточного срока устранения для уязвимостей со статусом UNCHANGED
 """
 
 import json
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import Dict, Set, Any, Tuple, Optional
 from enum import Enum
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 class ChangeType(Enum):
@@ -26,7 +27,8 @@ class ChangeType(Enum):
 
 
 class TrivyDiffAnalyzer:
-    def __init__(self, report1_path: str, report2_path: str, debug: bool = False):
+    def __init__(self, report1_path: str, report2_path: str, debug: bool = False,
+                 start_date: str = None, end_date: str = None):
         self.report1_path = report1_path
         self.report2_path = report2_path
         self.debug = debug
@@ -36,8 +38,41 @@ class TrivyDiffAnalyzer:
 
         self.report_type = self._detect_report_type()
 
+        # Парсим start_date (дата выявления)
+        self.start_date = None
+        if start_date:
+            try:
+                self.start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+            except ValueError:
+                print(f"⚠️ Неверный формат даты выявления '{start_date}', используется CreatedAt отчета 1")
+
+        # Парсим end_date (дата устранения/контрольная дата)
+        self.end_date = None
+        if end_date:
+            try:
+                self.end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+            except ValueError:
+                print(f"⚠️ Неверный формат даты устранения '{end_date}', используется CreatedAt отчета 2")
+
+        # Извлекаем CreatedAt из первого отчета (для даты начала)
+        self.created_date_report1 = self._extract_created_date(self.report1)
+        # Извлекаем CreatedAt из второго отчета (для даты устранения)
+        self.created_date_report2 = self._extract_created_date(self.report2)
+
         if self.debug:
             print(f"📋 Detected report type: {self.report_type}")
+            if self.created_date_report1:
+                print(f"📅 CreatedAt отчета 1: {self.created_date_report1}")
+            if self.created_date_report2:
+                print(f"📅 CreatedAt отчета 2: {self.created_date_report2}")
+            if self.start_date:
+                print(f"📅 Дата выявления: {self.start_date}")
+            else:
+                print(f"📅 Дата выявления: используется CreatedAt отчета 1 ({self.created_date_report1})")
+            if self.end_date:
+                print(f"📅 Дата устранения: {self.end_date}")
+            else:
+                print(f"📅 Дата устранения: используется CreatedAt отчета 2 ({self.created_date_report2})")
 
         self.packages1: Dict[str, Dict] = {}
         self.packages2: Dict[str, Dict] = {}
@@ -71,6 +106,108 @@ class TrivyDiffAnalyzer:
                     if pkg.get('FilePath'):
                         return 'jar'
         return 'docker'
+
+    def _extract_created_date(self, report: Dict) -> Optional[datetime.date]:
+        """Извлекает дату из поля CreatedAt отчета"""
+        created = report.get('CreatedAt', '')
+        if created:
+            try:
+                # Формат: "2026-08-31T03:48:29.664005488Z"
+                return datetime.strptime(created[:10], '%Y-%m-%d').date()
+            except ValueError:
+                pass
+        return None
+
+    def _get_remediation_days(self, severity: str, has_exploits: bool) -> int:
+        """
+        Возвращает срок устранения в днях (30 дней = 1 месяц)
+        Логика взята из excel_reporter.py
+        """
+        if severity == 'CRITICAL':
+            months = 6
+        elif severity == 'HIGH':
+            months = 9
+        else:  # MEDIUM, LOW, UNKNOWN
+            months = 12
+
+        if has_exploits:
+            months = max(1, months - 3)
+
+        return months * 30  # 30 дней в месяце
+
+    def _calculate_remaining_days(self, severity: str, has_exploits: bool) -> Optional[int]:
+        """
+        Вычисляет остаточный срок в днях.
+
+        start_date = дата_выявления (или CreatedAt первого отчета)
+        end_date = дата_устранения (контрольная дата, или CreatedAt второго отчета)
+
+        Срок устранения (в днях) прибавляется к start_date.
+        due_date = start_date + remediation_days
+
+        remaining_days = due_date - end_date
+        Если remaining_days > 0 → еще есть время
+        Если remaining_days <= 0 → просрочка
+        """
+        # Берем start_date из первого отчета (если не указана)
+        if self.start_date:
+            start_date = self.start_date
+        else:
+            start_date = self.created_date_report1
+
+        # Берем end_date из второго отчета (если не указана)
+        if self.end_date:
+            end_date = self.end_date
+        else:
+            end_date = self.created_date_report2
+
+        if not start_date or not end_date:
+            return None
+
+        # Срок устранения в днях
+        days = self._get_remediation_days(severity, has_exploits)
+
+        # Дата, до которой должны устранить
+        due_date = start_date + timedelta(days=days)
+
+        # Остаток в днях (от due_date до end_date)
+        return (due_date - end_date).days
+
+    def _has_exploits_from_vuln(self, vuln: Dict) -> bool:
+        """Проверяет наличие эксплойтов в уязвимости"""
+        sploitscan = vuln.get('sploitscan', {})
+        if isinstance(sploitscan, dict) and sploitscan:
+            # GitHub PoCs
+            github_data = sploitscan.get('GitHub Data')
+            if github_data and isinstance(github_data, dict):
+                github_pocs = github_data.get('pocs', [])
+                if github_pocs and len(github_pocs) > 0:
+                    return True
+
+            # ExploitDB
+            exploitdb_list = sploitscan.get('ExploitDB Data', [])
+            if exploitdb_list:
+                for item in exploitdb_list:
+                    if isinstance(item, dict) and item.get('id'):
+                        return True
+
+            # NVD exploits
+            nvd_data = sploitscan.get('NVD Data')
+            if nvd_data and isinstance(nvd_data, dict):
+                nvd_exploits = nvd_data.get('exploits', [])
+                if nvd_exploits and len(nvd_exploits) > 0:
+                    return True
+
+            # Metasploit
+            metasploit_data = sploitscan.get('Metasploit Data')
+            if metasploit_data and isinstance(metasploit_data, dict):
+                metasploit_modules = metasploit_data.get('modules', [])
+                if metasploit_modules:
+                    for module in metasploit_modules:
+                        if isinstance(module, dict) and module.get('url'):
+                            return True
+
+        return False
 
     def _build_pkg_key(self, pkg_name: str, pkg_uid: str = None) -> str:
         if not pkg_name:
@@ -302,6 +439,17 @@ class TrivyDiffAnalyzer:
                                         'new_version': new_version
                                     }
 
+                        # ===== РАСЧЕТ ОСТАТОЧНОГО СРОКА ДЛЯ UNCHANGED =====
+                        if self.vuln_changes.get(vuln_key) == ChangeType.UNCHANGED:
+                            severity = vuln.get('Severity', 'UNKNOWN')
+                            has_exploits = self._has_exploits_from_vuln(vuln)
+                            remaining_days = self._calculate_remaining_days(severity, has_exploits)
+
+                            if remaining_days is not None:
+                                vuln['_remaining_days'] = remaining_days
+                                if self.debug:
+                                    print(f"   🔄 {vuln_id}: remaining_days = {remaining_days}")
+
         removed_vulns = []
         for vuln_key, change_type in self.vuln_changes.items():
             if change_type == ChangeType.REMOVED and vuln_key in self.vulns1:
@@ -345,13 +493,26 @@ class TrivyDiffAnalyzer:
             'vulnerabilities': self._calculate_stats(self.vuln_changes),
             'report1': {
                 'path': str(self.report1_path),
-                'timestamp': datetime.fromtimestamp(Path(self.report1_path).stat().st_mtime).isoformat()
+                'timestamp': datetime.fromtimestamp(Path(self.report1_path).stat().st_mtime).isoformat(),
+                'created_date': self.created_date_report1.isoformat() if self.created_date_report1 else None
             },
             'report2': {
                 'path': str(self.report2_path),
-                'timestamp': datetime.fromtimestamp(Path(self.report2_path).stat().st_mtime).isoformat()
+                'timestamp': datetime.fromtimestamp(Path(self.report2_path).stat().st_mtime).isoformat(),
+                'created_date': self.created_date_report2.isoformat() if self.created_date_report2 else None
             }
         }
+
+        # Добавляем информацию о датах
+        if self.start_date:
+            diff_report['_diff_metadata']['start_date'] = self.start_date.isoformat()
+        else:
+            diff_report['_diff_metadata']['start_date'] = 'from_report1_created_date'
+
+        if self.end_date:
+            diff_report['_diff_metadata']['end_date'] = self.end_date.isoformat()
+        else:
+            diff_report['_diff_metadata']['end_date'] = 'from_report2_created_date'
 
         return diff_report
 
@@ -405,7 +566,20 @@ class TrivyDiffAnalyzer:
             vulns = []
             for vuln_key, change in self.vuln_changes.items():
                 if change == change_type:
-                    vulns.append(vuln_key)
+                    vuln_info = vuln_key
+                    # Добавляем информацию об остаточном сроке для UNCHANGED
+                    if change_type == ChangeType.UNCHANGED:
+                        vuln_data = self.vulns2.get(vuln_key)
+                        if vuln_data:
+                            remaining = vuln_data.get('_remaining_days')
+                            if remaining is not None:
+                                if remaining > 0:
+                                    vuln_info += f" (осталось {remaining} дн.)"
+                                elif remaining == 0:
+                                    vuln_info += " (истекает сегодня)"
+                                else:
+                                    vuln_info += f" (просрочка {abs(remaining)} дн.)"
+                    vulns.append(vuln_info)
 
             for vuln in sorted(vulns):
                 print(f"     - {vuln}")
@@ -441,23 +615,66 @@ class TrivyDiffAnalyzer:
 def main():
     try:
         if len(sys.argv) < 3:
-            print("Usage: python trivy_diff.py <report1.json> <report2.json> [--debug]")
-            print("  --debug - enable debug output")
+            print("Usage: python trivy_diff.py <report1.json> <report2.json> [start_date] [end_date] [--debug]")
+            print("  start_date - дата выявления уязвимостей (формат YYYY-MM-DD)")
+            print("  end_date   - дата устранения/контрольная дата (формат YYYY-MM-DD)")
+            print("  --debug    - enable debug output")
+            print("\nПримеры:")
+            print("  python trivy_diff.py old.json new.json")
+            print("  python trivy_diff.py old.json new.json 2026-09-01")
+            print("  python trivy_diff.py old.json new.json 2026-09-01 2026-12-01")
+            print("  python trivy_diff.py old.json new.json --debug")
             sys.exit(1)
 
         debug = '--debug' in sys.argv
-        args = [arg for arg in sys.argv[1:] if not arg.startswith('--')]
 
-        if len(args) != 2:
-            print("Usage: python trivy_diff.py <report1.json> <report2.json> [--debug]")
+        # Собираем аргументы без флагов
+        args = []
+        for arg in sys.argv[1:]:
+            if arg.startswith('--'):
+                continue
+            args.append(arg)
+
+        if len(args) < 2:
+            print("Usage: python trivy_diff.py <report1.json> <report2.json> [start_date] [end_date] [--debug]")
             sys.exit(1)
 
+        report1 = args[0]
+        report2 = args[1]
+        start_date = args[2] if len(args) >= 3 else None
+        end_date = args[3] if len(args) >= 4 else None
+
+        # Проверяем формат дат, если они указаны
+        if start_date:
+            try:
+                datetime.strptime(start_date, '%Y-%m-%d')
+            except ValueError:
+                print(f"❌ Ошибка: неверный формат даты выявления '{start_date}'")
+                print("   Используйте формат ГГГГ-ММ-ДД (например: 2026-09-01)")
+                sys.exit(1)
+
+        if end_date:
+            try:
+                datetime.strptime(end_date, '%Y-%m-%d')
+            except ValueError:
+                print(f"❌ Ошибка: неверный формат даты устранения '{end_date}'")
+                print("   Используйте формат ГГГГ-ММ-ДД (например: 2026-12-01)")
+                sys.exit(1)
+
         print(f"📂 Loading reports:")
-        print(f"  Report 1 (старый отчет): {args[0]}")
-        print(f"  Report 2 (новый отчет): {args[1]}")
+        print(f"  Report 1 (старый отчет): {report1}")
+        print(f"  Report 2 (новый отчет): {report2}")
+        if start_date:
+            print(f"  📅 Дата выявления: {start_date}")
+        else:
+            print(f"  📅 Дата выявления: из отчета 1 (CreatedAt)")
+        if end_date:
+            print(f"  📅 Дата устранения: {end_date}")
+        else:
+            print(f"  📅 Дата устранения: из отчета 2 (CreatedAt)")
         print()
 
-        analyzer = TrivyDiffAnalyzer(args[0], args[1], debug)
+        analyzer = TrivyDiffAnalyzer(report1, report2, debug, start_date, end_date)
         analyzer.analyze()
         analyzer.print_summary()
 

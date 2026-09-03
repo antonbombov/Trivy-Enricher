@@ -95,6 +95,60 @@ def get_remediation_period(severity, has_exploits):
         return f"{months} месяцев"
 
 
+def get_remediation_days(severity, has_exploits):
+    """
+    Возвращает срок устранения в днях (30 дней = 1 месяц)
+    """
+    if severity == 'CRITICAL':
+        months = 6
+    elif severity == 'HIGH':
+        months = 9
+    else:  # MEDIUM, LOW, UNKNOWN
+        months = 12
+
+    if has_exploits:
+        months = max(1, months - 3)
+
+    return months * 30
+
+
+def format_remaining_days(days):
+    """
+    Форматирует остаточный срок в днях для отображения в Excel
+    """
+    if days is None:
+        return ''
+    if days >= 0:
+        return f"{days} дн."
+    else:
+        return f"просрочка {abs(days)} дн."
+
+
+def get_remaining_days_style(days):
+    """
+    Возвращает стиль для ячейки с остаточным сроком
+    """
+    if days is None:
+        return None
+
+    # Если срок 0 или меньше (просрочка) — красный (как NEW)
+    if days <= 0:
+        return PatternFill(
+            start_color='ffc7ce',  # красный
+            end_color='ffc7ce',
+            fill_type='solid'
+        )
+    # Если срок меньше 30 дней — желтый (как UNCHANGED)
+    elif days < 30:
+        return PatternFill(
+            start_color='ffeb9c',  # желтый
+            end_color='ffeb9c',
+            fill_type='solid'
+        )
+
+    return None
+
+
 def generate_excel_report(enriched_trivy_path, output_dir, ptai_html_path=None, only_cache=False):
     """
     Основной метод генерации Excel отчета
@@ -588,6 +642,9 @@ def collect_all_vulnerabilities_with_diff(trivy_data, diff_mode='standard'):
                 if old_ver and new_ver:
                     version_change = f"{old_ver} → {new_ver}"
 
+            # Получаем остаточный срок для UNCHANGED
+            remaining_days = vuln.get('_remaining_days')
+
             pkg_path = vuln.get('PkgPath', 'N/A')
             root_jar = extract_root_jar(pkg_path)
 
@@ -615,7 +672,11 @@ def collect_all_vulnerabilities_with_diff(trivy_data, diff_mode='standard'):
             severity = vuln.get('Severity', 'UNKNOWN')
 
             # Получаем период устранения
-            remediation_period = get_remediation_period(severity, has_exploits)
+            # Для UNCHANGED используем остаточный срок в днях
+            if vuln_change_type == 'unchanged' and remaining_days is not None:
+                remediation_display = format_remaining_days(remaining_days)
+            else:
+                remediation_display = get_remediation_period(severity, has_exploits)
 
             vuln_data = {
                 'source': source_value,
@@ -624,12 +685,13 @@ def collect_all_vulnerabilities_with_diff(trivy_data, diff_mode='standard'):
                 'version': vuln.get('InstalledVersion', 'Unknown'),
                 'vulnerability_id': vuln['VulnerabilityID'],
                 'severity': severity,
-                'remediation_period': remediation_period,
+                'remediation_period': remediation_display,
                 'status': '',
                 'comment': '',
                 'vuln_change_type': vuln_change_type,
                 'package_change_type': pkg_change_type,
-                'version_change': version_change
+                'version_change': version_change,
+                'remaining_days': remaining_days  # сохраняем для стилизации
             }
 
             all_vulns.append(vuln_data)
@@ -786,7 +848,8 @@ def group_vulnerabilities_by_package_for_diff(vulnerabilities):
                 'severity': vuln['severity'],  # МОЖЕТ БЫТЬ РАЗНЫМ
                 'remediation_period': vuln['remediation_period'],
                 'status': vuln.get('status', ''),
-                'comment': comment
+                'comment': comment,
+                'remaining_days': vuln.get('remaining_days')  # для стилизации
             })
 
     return result
@@ -1184,9 +1247,20 @@ def add_sca_sheet(workbook, enriched_trivy_path, sheet_name="SCA Анализ", 
         col += 1
 
         # Срок устранения
-        cell = ws.cell(row=row_num, column=col, value=vuln['remediation_period'])
+        remediation_value = vuln['remediation_period']
+        cell = ws.cell(row=row_num, column=col, value=remediation_value)
         cell.border = CELL_BORDER
         cell.alignment = Alignment(horizontal='center', vertical='center')
+
+        # ===== НОВОЕ: СТИЛИЗАЦИЯ ДЛЯ UNCHANGED С ОСТАТОЧНЫМ СРОКОМ =====
+        if diff_mode != 'standard':
+            remaining_days = vuln.get('remaining_days')
+            vuln_status = vuln.get('vuln_status', '')
+            # Для UNCHANGED уязвимостей применяем стиль к ячейке срока устранения
+            if vuln_status == 'unchanged' and remaining_days is not None:
+                style = get_remaining_days_style(remaining_days)
+                if style:
+                    cell.fill = style
         col += 1
 
         # Статус
@@ -1240,7 +1314,7 @@ def set_sca_column_widths(worksheet, diff_mode='standard'):
             'G': 20,
             'H': 18,
             'I': 15,
-            'J': 15,
+            'J': 20,
             'K': 25,
             'L': 45
         }
@@ -1265,10 +1339,10 @@ def apply_change_status_style(cell, status):
 
     # Цвета для статусов
     status_colors = {
-        'new': 'ffc7ce',
-        'unchanged': 'ffeb9c',
-        'updated': '70a1db',
-        'removed': 'c6efce'
+        'new': 'ffc7ce',      # красный
+        'unchanged': 'ffeb9c', # желтый
+        'updated': '70a1db',   # синий
+        'removed': 'c6efce'    # зеленый
     }
 
     color = status_colors.get(status_lower)

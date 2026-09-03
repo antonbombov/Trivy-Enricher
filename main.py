@@ -34,7 +34,9 @@ def print_banner():
     print("=" * 70)
 
 
-def run_diff_mode(scan_dir: Path, file1: str, file2: str) -> Optional[Path]:
+def run_diff_mode(scan_dir: Path, file1: str, file2: str,
+                  start_date: Optional[str] = None,
+                  end_date: Optional[str] = None) -> Optional[Path]:
     """
     Выполняет diff анализ между двумя отчетами Trivy и сохраняет результат в scan_dir
 
@@ -59,10 +61,24 @@ def run_diff_mode(scan_dir: Path, file1: str, file2: str) -> Optional[Path]:
     print(f"\n📂 Сравниваем отчеты:")
     print(f"  Отчет 1 (старый отчет): {report1_path.name}")
     print(f"  Отчет 2 (новый отчет): {report2_path.name}")
+    if start_date:
+        print(f"  📅 Дата выявления: {start_date}")
+    else:
+        print(f"  📅 Дата выявления: из отчета (CreatedAt)")
+    if end_date:
+        print(f"  📅 Дата устранения: {end_date}")
+    else:
+        print(f"  📅 Дата устранения: из отчета (CreatedAt)")
     print()
 
     try:
-        analyzer = TrivyDiffAnalyzer(str(report1_path), str(report2_path), debug=True)
+        analyzer = TrivyDiffAnalyzer(
+            str(report1_path),
+            str(report2_path),
+            debug=True,
+            start_date=start_date,
+            end_date=end_date
+        )
         analyzer.analyze()
         analyzer.print_summary()
 
@@ -227,7 +243,7 @@ def main():
     generate_html, generate_excel_flag, skip_enrich, only_cache, ptai_only = get_report_types(args)
 
     # ===== ПРОВЕРЯЕМ РЕЖИМ DIFF =====
-    diff_files, diff_active = get_diff_files(args, scan_dir)
+    diff_files, diff_active, start_date, end_date = get_diff_files(args, scan_dir)
 
     # Если diff_files = None, но diff активен - значит пользователь отменил
     if diff_files is None and diff_active:
@@ -236,7 +252,7 @@ def main():
 
     # Если diff активен - запускаем diff анализ
     if diff_active and diff_files is not None:
-        diff_report = run_diff_mode(scan_dir, diff_files[0], diff_files[1])
+        diff_report = run_diff_mode(scan_dir, diff_files[0], diff_files[1], start_date, end_date)
         if not diff_report:
             print("\n❌ Diff анализ завершился с ошибкой")
             # Если нет других режимов - выходим
@@ -319,7 +335,6 @@ def main():
         print(f"   📋 Логи SploitScan: {output_dir / 'logs'}")
 
     # Ищем ВСЕ отчеты в указанной папке scan_dir
-    # (включая diff отчеты, которые только что сохранились)
     trivy_files = list(scan_dir.glob("*.json"))
     # Исключаем только конфиг
     trivy_files = [f for f in trivy_files if f.name != 'config.json']
