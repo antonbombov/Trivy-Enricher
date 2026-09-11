@@ -2,22 +2,26 @@ FROM python:3.12-slim-bullseye
 
 WORKDIR /app
 
+# Внутренние переменные контейнера
+ENV HOME=/tmp
+ENV PYTHONDONTWRITEBYTECODE=1
+
 RUN apt-get update -qq && apt-get install -y -qq wget git tar && rm -rf /var/lib/apt/lists/*
 
 # Клонируем проекты
 RUN git clone https://github.com/antonbombov/SploitScan /sploitscan
 RUN git clone https://github.com/antonbombov/Trivy-Enricher /app
 
-# Устанавливаем зависимости SploitScan
-RUN pip install --trusted-host pypi.org --trusted-host pypi.python.org --trusted-host files.pythonhosted.org --no-cache-dir -r /sploitscan/requirements.txt
-
-# Устанавливаем зависимости основного проекта
-RUN pip install --trusted-host pypi.org --trusted-host pypi.python.org --trusted-host files.pythonhosted.org --no-cache-dir -r /app/requirements.txt
+# Устанавливаем зависимости
+RUN pip install --no-cache-dir -r /sploitscan/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
 # Создаем директории для монтирования
-RUN mkdir -p /scan/input /scan/cache /scan/results
+# Права 777, чтобы любой UID (в т.ч. --user) мог писать
+RUN mkdir -p /scan/input /scan/cache /scan/results && \
+    chmod -R 777 /scan
 
-# Создаем конфиг
+# Конфиг
 RUN echo '{ \
   "sploitscan_path": "/sploitscan/sploitscan.py", \
   "scan_directory": "/scan/input/", \
@@ -30,7 +34,6 @@ RUN echo '{ \
   "sploitscan_version": "0.14.3_enhanced" \
 }' > /app/config.json
 
-# Точка входа с возможностью передавать аргументы
 ENTRYPOINT ["python", "-u", "main.py"]
 CMD []
 
