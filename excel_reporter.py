@@ -35,7 +35,7 @@ SCA_COLUMN_HEADERS = [
     "Комментарий"
 ]
 
-# Имена колонок для SCA с diff статусами
+# Имена колонок для SCA с diff статусами (лист "SCA Анализ")
 SCA_DIFF_COLUMN_HEADERS = [
     "№",
     "Источник",
@@ -48,6 +48,20 @@ SCA_DIFF_COLUMN_HEADERS = [
     "Уровень критичности",
     "Срок устранения",
     "Статус",
+    "Комментарий"
+]
+
+# Имена колонок для листов "SCA NEW" и "SCA REMOVED" (без "Срок устранения" и "Статус")
+SCA_DIFF_SHORT_COLUMN_HEADERS = [
+    "№",
+    "Источник",
+    "Путь",
+    "Пакет",
+    "Версия",
+    "Статус пакета",
+    "Идентификатор уязвимости",
+    "Статус уязвимости",
+    "Уровень критичности",
     "Комментарий"
 ]
 
@@ -68,13 +82,6 @@ PTAI_COLUMN_HEADERS = [
 def get_remediation_period(severity, has_exploits):
     """
     Возвращает срок устранения в виде текстового периода (без привязки к дате)
-
-    Args:
-        severity: уровень критичности (CRITICAL, HIGH, MEDIUM, LOW, UNKNOWN)
-        has_exploits: наличие публичных эксплойтов
-
-    Returns:
-        str: строка вида "6 месяцев", "3 месяца" и т.д.
     """
     if severity == 'CRITICAL':
         months = 6
@@ -86,7 +93,6 @@ def get_remediation_period(severity, has_exploits):
     if has_exploits:
         months = max(1, months - 3)
 
-    # Склонение слова "месяц"
     if months == 1:
         return "1 месяц"
     elif months in [2, 3, 4]:
@@ -134,19 +140,75 @@ def get_remaining_days_style(days):
     # Если срок 0 или меньше (просрочка) — красный (как NEW)
     if days <= 0:
         return PatternFill(
-            start_color='ffc7ce',  # красный
+            start_color='ffc7ce',
             end_color='ffc7ce',
             fill_type='solid'
         )
     # Если срок меньше 30 дней — желтый (как UNCHANGED)
     elif days < 30:
         return PatternFill(
-            start_color='ffeb9c',  # желтый
+            start_color='ffeb9c',
             end_color='ffeb9c',
             fill_type='solid'
         )
 
     return None
+
+
+def get_min_remediation_days_for_group(vulns):
+    """
+    Вычисляет минимальный срок устранения для группы CVE.
+
+    Для каждой CVE:
+    - NEW: срок = get_remediation_days(severity, has_exploits)
+    - UNCHANGED: срок = remaining_days (может быть отрицательным)
+
+    Возвращает:
+        (min_days, source_type, display_text)
+    """
+    if not vulns:
+        return None, None, ''
+
+    min_days = None
+    min_source = None
+    min_vuln = None
+
+    for vuln in vulns:
+        vuln_status = vuln.get('vuln_change_type', '') or vuln.get('vuln_status', '')
+        severity = vuln.get('severity', 'UNKNOWN')
+        has_exploits = vuln.get('has_exploits', False)
+
+        if vuln_status == 'unchanged':
+            remaining = vuln.get('remaining_days')
+            if remaining is None:
+                continue
+            days = remaining
+            source = 'unchanged'
+        elif vuln_status == 'new':
+            days = get_remediation_days(severity, has_exploits)
+            source = 'new'
+        else:
+            continue
+
+        if min_days is None or days < min_days:
+            min_days = days
+            min_source = source
+            min_vuln = vuln
+
+    if min_days is None:
+        return None, None, ''
+
+    if min_source == 'unchanged':
+        if min_days >= 0:
+            display_text = f"{min_days} дн."
+        else:
+            display_text = f"просрочка {abs(min_days)} дн."
+    else:
+        severity = min_vuln.get('severity', 'UNKNOWN')
+        has_exploits = min_vuln.get('has_exploits', False)
+        display_text = get_remediation_period(severity, has_exploits)
+
+    return min_days, min_source, display_text
 
 
 def generate_excel_report(enriched_trivy_path, output_dir, ptai_html_path=None, only_cache=False):
@@ -162,46 +224,32 @@ def generate_excel_report(enriched_trivy_path, output_dir, ptai_html_path=None, 
     Если diff данных нет:
         - Лист 1: SCA Анализ (все уязвимости)
         - Лист 2: PTAI Анализ (опционально)
-
-    Args:
-        enriched_trivy_path: путь к обогащенному JSON
-        output_dir: директория для сохранения
-        ptai_html_path: путь к PTAI отчету (опционально)
-        only_cache: флаг режима only-cache для формирования имени файла
     """
     try:
-        # Загружаем JSON для проверки наличия diff
         with open(enriched_trivy_path, 'r', encoding='utf-8-sig') as f:
             trivy_data = json.load(f)
 
         has_diff = '_diff_metadata' in trivy_data
 
-        # Создаем новую рабочую книгу
         wb = openpyxl.Workbook()
 
-        # Удаляем дефолтный лист
         if 'Sheet' in wb.sheetnames:
             wb.remove(wb['Sheet'])
 
-        # 1. Добавляем лист с SCA анализом
         if has_diff:
-            # Для diff - только актуальные (new + unchanged)
             print("   Добавление листа SCA Анализ (актуальные уязвимости: new + unchanged)...")
             add_sca_sheet(wb, enriched_trivy_path, sheet_name="SCA Анализ", diff_mode='full')
 
-            # 2. Лист NEW
             print("   Добавление листа SCA NEW (только новые уязвимости)...")
             add_sca_sheet(wb, enriched_trivy_path, sheet_name="SCA NEW", diff_mode='new')
 
-            # 3. Лист REMOVED
             print("   Добавление листа SCA REMOVED (только исчезнувшие уязвимости)...")
             add_sca_sheet(wb, enriched_trivy_path, sheet_name="SCA REMOVED", diff_mode='removed')
         else:
-            # Без diff - полный отчет
             print("   Добавление листа SCA Анализ (полный отчет)...")
             add_sca_sheet(wb, enriched_trivy_path, sheet_name="SCA Анализ", diff_mode='standard')
 
-        # 4. Добавляем PTAI лист (опционально, без изменений)
+        # PTAI лист
         if ptai_html_path and Path(ptai_html_path).exists():
             trivy_name = Path(enriched_trivy_path).stem.replace('_enriched', '').replace('_only_cache', '')
             ptai_name = Path(ptai_html_path).stem
@@ -218,18 +266,15 @@ def generate_excel_report(enriched_trivy_path, output_dir, ptai_html_path=None, 
             else:
                 print(f"   ⚠️ PTAI отчет не существует: {ptai_html_path}")
 
-        # Определяем путь для сохранения
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Формируем имя выходного файла
         base_name = Path(enriched_trivy_path).stem.replace('_enriched', '').replace('_only_cache', '')
         if only_cache:
             output_path = output_dir / f"{base_name}_only_cache_report.xlsx"
         else:
             output_path = output_dir / f"{base_name}_report.xlsx"
 
-        # Сохраняем файл
         try:
             wb.save(output_path)
             print(f"   ✅ Excel файл сохранен: {output_path}")
@@ -245,7 +290,6 @@ def generate_excel_report(enriched_trivy_path, output_dir, ptai_html_path=None, 
             print(f"   📁 Путь: {output_path}")
             return None
 
-        # Информация о созданных листах
         sheets_created = ["SCA Анализ"]
         if has_diff:
             sheets_created.append("SCA NEW")
@@ -269,13 +313,6 @@ def generate_excel_report(enriched_trivy_path, output_dir, ptai_html_path=None, 
 def generate_ptai_only_excel_report(ptai_html_path, output_dir):
     """
     Генерирует Excel отчет только с PTAI анализом (без SCA листа)
-
-    Args:
-        ptai_html_path: Путь к PTAI HTML отчету
-        output_dir: Директория для сохранения результата
-
-    Returns:
-        Path к созданному Excel файлу или None
     """
     try:
         ptai_path = Path(ptai_html_path)
@@ -284,28 +321,22 @@ def generate_ptai_only_excel_report(ptai_html_path, output_dir):
             print(f"   ❌ PTAI файл не существует: {ptai_path}")
             return None
 
-        # Создаем новую рабочую книгу
         wb = openpyxl.Workbook()
 
-        # Удаляем дефолтный лист
         if 'Sheet' in wb.sheetnames:
             wb.remove(wb['Sheet'])
 
-        # Добавляем лист с PTAI анализом
         print(f"   Добавление листа PTAI Анализ из: {ptai_path.name}...")
         success = create_ptai_sheet(wb, ptai_path)
 
         if not success:
             return None
 
-        # Определяем путь для сохранения
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Формируем имя выходного файла
         output_path = output_dir / f"{ptai_path.stem}_ptai.xlsx"
 
-        # Сохраняем файл
         try:
             wb.save(output_path)
             print(f"   ✅ Excel файл (PTAI only) сохранен: {output_path}")
@@ -332,51 +363,35 @@ def generate_ptai_only_excel_report(ptai_html_path, output_dir):
 def create_ptai_sheet(workbook, ptai_html_path, insert_position=None):
     """
     Создает лист PTAI Анализ в переданной книге
-
-    Args:
-        workbook: openpyxl Workbook объект
-        ptai_html_path: путь к PTAI HTML отчету
-        insert_position: позиция для вставки листа (None = в конец)
-
-    Returns:
-        bool: True если лист создан, False если ошибка
     """
     try:
-        # Подготавливаем данные из PTAI отчета
         data, project_name = prepare_ptai_excel_data(ptai_html_path, debug=False)
 
         if not data:
             print(f"   ⚠️ Нет данных для PTAI листа в файле: {Path(ptai_html_path).name}")
             return False
 
-        # Создаем лист
         if insert_position is not None:
             ws = workbook.create_sheet("PTAI Анализ", insert_position)
         else:
             ws = workbook.create_sheet("PTAI Анализ")
 
-        # Добавляем информационный блок
         current_date = datetime.now()
 
-        # Наименование проверяемого объекта
         cell = ws.cell(row=1, column=1, value=f"Объект проверки: {project_name}")
         cell.font = INFO_FONT
         cell.alignment = Alignment(horizontal='left', vertical='center')
 
-        # Дата построения отчета
         cell = ws.cell(row=2, column=1, value=f"Дата построения отчета: {current_date.strftime('%d.%m.%Y')}")
         cell.font = INFO_FONT
         cell.alignment = Alignment(horizontal='left', vertical='center')
 
-        # Источник данных
         cell = ws.cell(row=3, column=1, value=f"Источник: {Path(ptai_html_path).name}")
         cell.font = INFO_FONT
         cell.alignment = Alignment(horizontal='left', vertical='center')
 
-        # Пустая строка перед заголовками
         ws.row_dimensions[4].height = 10
 
-        # Заголовки
         for col, header in enumerate(PTAI_COLUMN_HEADERS, 1):
             cell = ws.cell(row=5, column=col, value=header)
             cell.font = HEADER_FONT
@@ -384,40 +399,32 @@ def create_ptai_sheet(workbook, ptai_html_path, insert_position=None):
             cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
             cell.border = CELL_BORDER
 
-        # Данные
         for row, item in enumerate(data, 6):
-            # Номер строки
             cell_num = ws.cell(row=row, column=1, value=row - 5)
             cell_num.border = CELL_BORDER
             cell_num.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
-            # ID уязвимости
             cell = ws.cell(row=row, column=2, value=item['ID уязвимости'])
             cell.border = CELL_BORDER
             cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
-            # Тип уязвимости
             cell = ws.cell(row=row, column=3, value=item['Тип уязвимости'])
             cell.border = CELL_BORDER
             cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
-            # Класс и метод / Уязвимый файл
             cell = ws.cell(row=row, column=4, value=item['Класс и метод / Уязвимый файл'])
             cell.border = CELL_BORDER
             cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
-            # Комментарий
             cell = ws.cell(row=row, column=5, value=item['Комментарий'])
             cell.border = CELL_BORDER
             cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
-            # Статус
             status_value = item['Статус']
             cell = ws.cell(row=row, column=6, value=status_value)
             cell.border = CELL_BORDER
             cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
-            # CWSS
             cwss_value = item['CWSS']
             if status_value.lower() == 'опровергнута' and not cwss_value:
                 cwss_value = '—'
@@ -425,7 +432,6 @@ def create_ptai_sheet(workbook, ptai_html_path, insert_position=None):
             cell.border = CELL_BORDER
             cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
-            # Срок устранения - формула на основе CWSS (колонка G)
             cell = ws.cell(row=row, column=8)
             formula = f'''=IF(OR(ISBLANK(G{row}), NOT(ISNUMBER(G{row}))), "",
                 IF(LOWER(F{row})="опровергнута", "—",
@@ -440,7 +446,6 @@ def create_ptai_sheet(workbook, ptai_html_path, insert_position=None):
             cell.border = CELL_BORDER
             cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
-            # Компенсирующие меры
             measures_value = item['Компенсирующие меры']
             if status_value.lower() == 'опровергнута' and not measures_value:
                 measures_value = '—'
@@ -448,14 +453,11 @@ def create_ptai_sheet(workbook, ptai_html_path, insert_position=None):
             cell.border = CELL_BORDER
             cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
-        # Настраиваем ширину колонок
         set_ptai_column_widths(ws)
 
-        # Добавляем фильтры
         if data:
             ws.auto_filter.ref = f"A5:I{len(data) + 5}"
 
-        # Замораживаем строку с заголовками
         ws.freeze_panes = 'A6'
 
         print(f"   ✅ Добавлено {len(data)} записей в лист PTAI Анализ")
@@ -470,8 +472,7 @@ def create_ptai_sheet(workbook, ptai_html_path, insert_position=None):
 
 def add_ptai_sheet(workbook, html_file_path):
     """
-    Добавляет лист с PTAI анализом в существующий workbook
-    (обертка для обратной совместимости)
+    Обертка для обратной совместимости
     """
     return create_ptai_sheet(workbook, html_file_path)
 
@@ -479,13 +480,6 @@ def add_ptai_sheet(workbook, html_file_path):
 def generate_ptai_only_reports_for_all(config, output_dir):
     """
     Генерирует PTAI-only Excel отчеты для всех HTML файлов в папке PTAI
-
-    Args:
-        config: Словарь конфигурации
-        output_dir: Директория для сохранения результатов
-
-    Returns:
-        Tuple[processed_count, success_count]
     """
     from config_manager import get_ptai_reports_path
 
@@ -521,8 +515,7 @@ def generate_ptai_only_reports_for_all(config, output_dir):
 
 def collect_all_vulnerabilities(trivy_data):
     """
-    Собирает ВСЕ вхождения уязвимостей БЕЗ какой-либо дедупликации
-    (для режима standard - без diff)
+    Собирает ВСЕ вхождения уязвимостей БЕЗ дедупликации (standard режим)
     """
     all_vulns = []
 
@@ -537,12 +530,10 @@ def collect_all_vulnerabilities(trivy_data):
                     pkg_path = vuln.get('PkgPath', 'N/A')
                     root_jar = extract_root_jar(pkg_path)
 
-                    # Формируем источник
                     source_value = target
                     if root_jar and root_jar != 'N/A':
                         source_value = f"{target}\n({root_jar})"
 
-                    # Путь без root jar
                     path_without_root = pkg_path
                     if root_jar and pkg_path and pkg_path != 'N/A':
                         if pkg_path.startswith(root_jar + '/'):
@@ -553,14 +544,10 @@ def collect_all_vulnerabilities(trivy_data):
                         if path_without_root and path_without_root != 'N/A' and path_without_root != "(root)":
                             path_without_root = path_without_root.replace('BOOT-INF/', '')
 
-                    # Проверяем наличие эксплойтов
                     sploitscan = vuln.get('sploitscan', {})
                     has_exploits = has_any_exploits(sploitscan)
 
-                    # Получаем severity
                     severity = vuln.get('Severity', 'UNKNOWN')
-
-                    # Получаем период устранения
                     remediation_period = get_remediation_period(severity, has_exploits)
 
                     all_vulns.append({
@@ -581,23 +568,13 @@ def collect_all_vulnerabilities(trivy_data):
 def collect_all_vulnerabilities_with_diff(trivy_data, diff_mode='standard'):
     """
     Собирает уязвимости с учетом diff статусов
-
-    Args:
-        trivy_data: данные из JSON
-        diff_mode:
-            - 'standard': все уязвимости (без diff фильтрации)
-            - 'full': только new + unchanged (актуальные)
-            - 'new': только new
-            - 'removed': только removed
     """
-    # Если diff_mode == 'standard' - игнорируем diff, берем все
     if diff_mode == 'standard':
         return collect_all_vulnerabilities(trivy_data)
 
     all_vulns = []
     has_diff = '_diff_metadata' in trivy_data
 
-    # Если diff нет, но пришли в diff_mode - берем все (fallback)
     if not has_diff:
         return collect_all_vulnerabilities(trivy_data)
 
@@ -613,27 +590,20 @@ def collect_all_vulnerabilities_with_diff(trivy_data, diff_mode='standard'):
             if 'VulnerabilityID' not in vuln:
                 continue
 
-            # Получаем статус уязвимости
             vuln_change_type = vuln.get('_change_type')
 
-            # Фильтрация в зависимости от режима
             if diff_mode == 'full':
-                # Только new и unchanged
                 if vuln_change_type not in ['new', 'unchanged']:
                     continue
             elif diff_mode == 'new':
-                # Только new
                 if vuln_change_type != 'new':
                     continue
             elif diff_mode == 'removed':
-                # Только removed
                 if vuln_change_type != 'removed':
                     continue
 
-            # Получаем статус пакета
             pkg_change_type = vuln.get('_package_change_type')
 
-            # Получаем информацию об изменении версии (для UPDATED)
             version_change = ''
             if pkg_change_type == 'updated':
                 version_change_data = vuln.get('_package_version_change', {})
@@ -642,18 +612,15 @@ def collect_all_vulnerabilities_with_diff(trivy_data, diff_mode='standard'):
                 if old_ver and new_ver:
                     version_change = f"{old_ver} → {new_ver}"
 
-            # Получаем остаточный срок для UNCHANGED
             remaining_days = vuln.get('_remaining_days')
 
             pkg_path = vuln.get('PkgPath', 'N/A')
             root_jar = extract_root_jar(pkg_path)
 
-            # Формируем источник
             source_value = target
             if root_jar and root_jar != 'N/A':
                 source_value = f"{target}\n({root_jar})"
 
-            # Путь без root jar
             path_without_root = pkg_path
             if root_jar and pkg_path and pkg_path != 'N/A':
                 if pkg_path.startswith(root_jar + '/'):
@@ -664,15 +631,11 @@ def collect_all_vulnerabilities_with_diff(trivy_data, diff_mode='standard'):
                 if path_without_root and path_without_root != 'N/A' and path_without_root != "(root)":
                     path_without_root = path_without_root.replace('BOOT-INF/', '')
 
-            # Проверяем наличие эксплойтов
             sploitscan = vuln.get('sploitscan', {})
             has_exploits = has_any_exploits(sploitscan)
 
-            # Получаем severity
             severity = vuln.get('Severity', 'UNKNOWN')
 
-            # Получаем период устранения
-            # Для UNCHANGED используем остаточный срок в днях
             if vuln_change_type == 'unchanged' and remaining_days is not None:
                 remediation_display = format_remaining_days(remaining_days)
             else:
@@ -691,7 +654,8 @@ def collect_all_vulnerabilities_with_diff(trivy_data, diff_mode='standard'):
                 'vuln_change_type': vuln_change_type,
                 'package_change_type': pkg_change_type,
                 'version_change': version_change,
-                'remaining_days': remaining_days  # сохраняем для стилизации
+                'remaining_days': remaining_days,
+                'has_exploits': has_exploits
             }
 
             all_vulns.append(vuln_data)
@@ -701,9 +665,7 @@ def collect_all_vulnerabilities_with_diff(trivy_data, diff_mode='standard'):
 
 def group_vulnerabilities_by_artifact(vulnerabilities):
     """
-    Группирует уязвимости по уникальному артефакту (источник + путь + пакет + версия)
-    Объединяет все CVE, найденные для одного и того же артефакта
-    (используется для standard режима - без diff)
+    Группирует уязвимости по уникальному артефакту (standard режим)
     """
     from collections import defaultdict
 
@@ -723,41 +685,32 @@ def group_vulnerabilities_by_artifact(vulnerabilities):
     severity_order = {'CRITICAL': 4, 'HIGH': 3, 'MEDIUM': 2, 'LOW': 1, 'UNKNOWN': 0}
 
     for vuln in vulnerabilities:
-        # Ключ группировки: источник + путь + пакет + версия
         key = (vuln['source'], vuln['path'], vuln['package'], vuln['version'])
         group = groups[key]
 
-        # Сохраняем базовую информацию
         group['source'] = vuln['source']
         group['path'] = vuln['path']
         group['package'] = vuln['package']
         group['version'] = vuln['version']
 
-        # ID уязвимостей
         group['vulnerability_ids'].add(vuln['vulnerability_id'])
 
-        # Уровни критичности
         severity = vuln['severity']
         group['severities'].append(severity)
         group['severity_levels'].append((severity_order.get(severity, 0), severity))
 
-        # Периоды устранения
         remediation_period = vuln['remediation_period']
         group['remediation_periods'].append((severity_order.get(severity, 0), remediation_period))
 
-        # Статус и комментарий
         if vuln.get('status'):
             group['statuses'].add(vuln['status'])
         if vuln.get('comment'):
             group['comments'].add(vuln['comment'])
 
-    # Формируем результат
     result = []
     for key, group in groups.items():
-        # Объединяем идентификаторы уязвимостей
         vuln_ids_str = '\n'.join(sorted(group['vulnerability_ids']))
 
-        # Объединяем уровни критичности
         unique_severities = []
         seen = set()
         for _, sev in sorted(group['severity_levels'], key=lambda x: x[0], reverse=True):
@@ -766,13 +719,11 @@ def group_vulnerabilities_by_artifact(vulnerabilities):
                 unique_severities.append(sev)
         severity_str = '\n'.join(unique_severities)
 
-        # Выбираем период устранения для наивысшего уровня критичности
         remediation_period = ''
         if group['remediation_periods']:
             sorted_periods = sorted(group['remediation_periods'], key=lambda x: x[0], reverse=True)
             remediation_period = sorted_periods[0][1]
 
-        # Статус и комментарий
         status_str = '\n'.join(sorted(group['statuses'])) if group['statuses'] else ''
         comment_str = '\n'.join(sorted(group['comments'])) if group['comments'] else ''
 
@@ -794,25 +745,19 @@ def group_vulnerabilities_by_artifact(vulnerabilities):
 def group_vulnerabilities_by_package_for_diff(vulnerabilities):
     """
     Группирует уязвимости для diff режимов.
-    Источник, путь, пакет, версия и статус пакета - объединенные ячейки.
-    Каждый CVE - отдельная строка со своим статусом.
-
-    Группировка по: источник + путь + пакет + версия
-    Но каждая уязвимость (CVE) идет отдельной строкой!
+    Каждая CVE - отдельная строка.
+    Дополнительно вычисляется минимальный срок устранения для группы (для листа 'SCA Анализ').
     """
     from collections import defaultdict
 
-    # Группируем по источнику + пути + пакету + версии
     groups = defaultdict(list)
 
     for vuln in vulnerabilities:
-        # КЛЮЧ: источник + путь + пакет + версия (ВСЕ ВМЕСТЕ!)
         key = (vuln['source'], vuln['path'], vuln['package'], vuln['version'])
         groups[key].append(vuln)
 
     result = []
     for (source, path, package, version), vulns in groups.items():
-        # Определяем статус пакета (должен быть одинаковым для всех CVE в группе)
         package_change_type = None
         version_change = ''
 
@@ -823,13 +768,15 @@ def group_vulnerabilities_by_package_for_diff(vulnerabilities):
                     version_change = v['version_change']
                 break
 
-        # Сортируем уязвимости по severity (CRITICAL → HIGH → ...)
+        # Вычисляем минимальный срок для группы
+        min_days, min_source, min_display = get_min_remediation_days_for_group(vulns)
+
         severity_order = {'CRITICAL': 4, 'HIGH': 3, 'MEDIUM': 2, 'LOW': 1, 'UNKNOWN': 0}
         sorted_vulns = sorted(vulns, key=lambda x: severity_order.get(x['severity'], 0), reverse=True)
 
-        # Для каждого CVE создаем отдельную строку с ОДИНАКОВЫМИ источником и путем
-        for vuln in sorted_vulns:
-            # Формируем комментарий с информацией об изменении версии (для UPDATED)
+        group_size = len(sorted_vulns)
+
+        for idx, vuln in enumerate(sorted_vulns):
             comment = vuln.get('comment', '')
             if package_change_type == 'updated' and version_change:
                 if comment:
@@ -838,18 +785,24 @@ def group_vulnerabilities_by_package_for_diff(vulnerabilities):
                     comment = f"Версия пакета: {version_change}"
 
             result.append({
-                'source': source,  # ОДИНАКОВОЕ для всех CVE в группе
-                'path': path,  # ОДИНАКОВОЕ для всех CVE в группе
-                'package': package,  # ОДИНАКОВОЕ для всех CVE в группе
-                'version': version,  # ОДИНАКОВОЕ для всех CVE в группе
+                'source': source,
+                'path': path,
+                'package': package,
+                'version': version,
                 'package_change_type': package_change_type,
-                'vulnerability_id': vuln['vulnerability_id'],  # УНИКАЛЬНОЕ для каждой CVE
-                'vuln_status': vuln.get('vuln_change_type', ''),  # УНИКАЛЬНОЕ для каждой CVE
-                'severity': vuln['severity'],  # МОЖЕТ БЫТЬ РАЗНЫМ
+                'vulnerability_id': vuln['vulnerability_id'],
+                'vuln_status': vuln.get('vuln_change_type', ''),
+                'severity': vuln['severity'],
                 'remediation_period': vuln['remediation_period'],
                 'status': vuln.get('status', ''),
                 'comment': comment,
-                'remaining_days': vuln.get('remaining_days')  # для стилизации
+                'remaining_days': vuln.get('remaining_days'),
+                # Данные для группового срока
+                'group_min_days': min_days,
+                'group_min_source': min_source,
+                'group_min_display': min_display,
+                'is_first_in_group': (idx == 0),
+                'group_size': group_size
             })
 
     return result
@@ -880,28 +833,24 @@ def has_any_exploits(sploitscan):
     if not isinstance(sploitscan, dict) or not sploitscan:
         return False
 
-    # GitHub PoCs
     github_data = sploitscan.get('GitHub Data')
     if github_data and isinstance(github_data, dict):
         github_pocs = github_data.get('pocs', [])
         if github_pocs and len(github_pocs) > 0:
             return True
 
-    # ExploitDB
     exploitdb_list = sploitscan.get('ExploitDB Data', [])
     if exploitdb_list:
         for item in exploitdb_list:
             if isinstance(item, dict) and item.get('id'):
                 return True
 
-    # NVD exploits
     nvd_data = sploitscan.get('NVD Data')
     if nvd_data and isinstance(nvd_data, dict):
         nvd_exploits = nvd_data.get('exploits', [])
         if nvd_exploits and len(nvd_exploits) > 0:
             return True
 
-    # Metasploit
     metasploit_data = sploitscan.get('Metasploit Data')
     if metasploit_data and isinstance(metasploit_data, dict):
         metasploit_modules = metasploit_data.get('modules', [])
@@ -929,25 +878,22 @@ def add_info_block(worksheet, artifact_name, current_date, description, diff_mod
     """
     date_str = current_date.strftime('%d.%m.%Y')
 
-    # Объект проверки
     cell = worksheet.cell(row=1, column=1, value=f"Объект проверки: {artifact_name}")
     cell.font = INFO_FONT
     cell.alignment = Alignment(horizontal='left', vertical='center')
 
-    # Дата построения отчета
     cell = worksheet.cell(row=2, column=1, value=f"Дата построения отчета: {date_str}")
     cell.font = INFO_FONT
     cell.alignment = Alignment(horizontal='left', vertical='center')
 
-    # Описание
     cell = worksheet.cell(row=3, column=1, value=description)
     cell.font = INFO_FONT
     cell.alignment = Alignment(horizontal='left', vertical='center')
 
-    # Объединяем ячейки для информационного блока
-    # Определяем количество колонок в зависимости от режима
     if diff_mode == 'standard':
         num_cols = len(SCA_COLUMN_HEADERS)
+    elif diff_mode in ['new', 'removed']:
+        num_cols = len(SCA_DIFF_SHORT_COLUMN_HEADERS)
     else:
         num_cols = len(SCA_DIFF_COLUMN_HEADERS)
 
@@ -964,7 +910,6 @@ def add_dropdown_lists(worksheet, num_rows, start_row, workbook):
     if num_rows == 0:
         return
 
-    # Создаем скрытый лист со справочником
     hidden_sheet = workbook.create_sheet("_status_reference")
     hidden_sheet.sheet_state = 'hidden'
 
@@ -1003,41 +948,34 @@ def merge_package_cells(worksheet, data, start_row, col_package, col_version, co
     start_merge_row = start_row
 
     for i, vuln in enumerate(data, start_row):
-        # КЛЮЧ ДЛЯ ОБЪЕДИНЕНИЯ: источник + путь + пакет + версия
         key = (vuln['source'], vuln['path'], vuln['package'], vuln['version'])
 
         if key != current_key:
-            # Закрываем предыдущую группу
             if current_key is not None and start_merge_row < i:
-                # Объединяем ИСТОЧНИК (колонка B)
                 worksheet.merge_cells(
                     start_row=start_merge_row,
                     start_column=2,
                     end_row=i - 1,
                     end_column=2
                 )
-                # Объединяем ПУТЬ (колонка C)
                 worksheet.merge_cells(
                     start_row=start_merge_row,
                     start_column=3,
                     end_row=i - 1,
                     end_column=3
                 )
-                # Объединяем пакет
                 worksheet.merge_cells(
                     start_row=start_merge_row,
                     start_column=col_package,
                     end_row=i - 1,
                     end_column=col_package
                 )
-                # Объединяем версию
                 worksheet.merge_cells(
                     start_row=start_merge_row,
                     start_column=col_version,
                     end_row=i - 1,
                     end_column=col_version
                 )
-                # Объединяем статус пакета (если указан)
                 if col_status:
                     worksheet.merge_cells(
                         start_row=start_merge_row,
@@ -1046,7 +984,6 @@ def merge_package_cells(worksheet, data, start_row, col_package, col_version, co
                         end_column=col_status
                     )
 
-                # Центрируем объединенные ячейки
                 for row in range(start_merge_row, i):
                     for col in [2, 3, col_package, col_version]:
                         cell = worksheet.cell(row=row, column=col)
@@ -1058,38 +995,32 @@ def merge_package_cells(worksheet, data, start_row, col_package, col_version, co
             current_key = key
             start_merge_row = i
 
-        # Для последней группы
         if i == len(data) + start_row - 1:
             if start_merge_row <= i:
-                # Объединяем ИСТОЧНИК
                 worksheet.merge_cells(
                     start_row=start_merge_row,
                     start_column=2,
                     end_row=i,
                     end_column=2
                 )
-                # Объединяем ПУТЬ
                 worksheet.merge_cells(
                     start_row=start_merge_row,
                     start_column=3,
                     end_row=i,
                     end_column=3
                 )
-                # Объединяем пакет
                 worksheet.merge_cells(
                     start_row=start_merge_row,
                     start_column=col_package,
                     end_row=i,
                     end_column=col_package
                 )
-                # Объединяем версию
                 worksheet.merge_cells(
                     start_row=start_merge_row,
                     start_column=col_version,
                     end_row=i,
                     end_column=col_version
                 )
-                # Объединяем статус пакета (если указан)
                 if col_status:
                     worksheet.merge_cells(
                         start_row=start_merge_row,
@@ -1098,7 +1029,6 @@ def merge_package_cells(worksheet, data, start_row, col_package, col_version, co
                         end_column=col_status
                     )
 
-                # Центрируем объединенные ячейки
                 for row in range(start_merge_row, i + 1):
                     for col in [2, 3, col_package, col_version]:
                         cell = worksheet.cell(row=row, column=col)
@@ -1108,6 +1038,68 @@ def merge_package_cells(worksheet, data, start_row, col_package, col_version, co
                         cell.alignment = Alignment(horizontal='center', vertical='center')
 
 
+def merge_remediation_column(worksheet, data, start_row, col_remediation):
+    """
+    Объединяет ячейки в колонке "Срок устранения" для групп (источник + путь + пакет + версия).
+    Значение в объединённой ячейке - минимальный срок группы.
+    Стиль применяется к объединённой ячейке.
+    """
+    if not data:
+        return
+
+    current_key = None
+    start_merge_row = start_row
+
+    def _apply_group_merge(start_r, end_r, vuln):
+        """Применяет объединение и стиль к группе"""
+        cell = worksheet.cell(row=start_r, column=col_remediation)
+        cell.value = vuln.get('group_min_display', '')
+        cell.border = CELL_BORDER
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+        min_days = vuln.get('group_min_days')
+        min_source = vuln.get('group_min_source')
+
+        if min_days is not None and min_source == 'unchanged':
+            style = get_remaining_days_style(min_days)
+            if style:
+                cell.fill = style
+
+        if end_r > start_r:
+            worksheet.merge_cells(
+                start_row=start_r,
+                start_column=col_remediation,
+                end_row=end_r,
+                end_column=col_remediation
+            )
+
+        for row in range(start_r, end_r + 1):
+            c = worksheet.cell(row=row, column=col_remediation)
+            c.border = CELL_BORDER
+            c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+    for i, vuln in enumerate(data, start_row):
+        key = (vuln['source'], vuln['path'], vuln['package'], vuln['version'])
+
+        if key != current_key:
+            if current_key is not None and start_merge_row < i:
+                # ИСПРАВЛЕНО: индекс первой CVE группы (без -1)
+                prev_idx = start_merge_row - start_row
+                prev_vuln = data[prev_idx]
+                _apply_group_merge(start_merge_row, i - 1, prev_vuln)
+
+            current_key = key
+            start_merge_row = i
+
+        # Последняя группа
+        if i == len(data) + start_row - 1:
+            if start_merge_row <= i:
+                # ИСПРАВЛЕНО: индекс первой CVE группы (без -1)
+                prev_idx = start_merge_row - start_row
+                prev_vuln = data[prev_idx]
+                _apply_group_merge(start_merge_row, i, prev_vuln)
+
+
 def add_sca_sheet(workbook, enriched_trivy_path, sheet_name="SCA Анализ", diff_mode='standard'):
     """
     Добавляет лист с SCA анализом из Trivy
@@ -1115,39 +1107,27 @@ def add_sca_sheet(workbook, enriched_trivy_path, sheet_name="SCA Анализ", 
     Для standard режима:
         - Группировка по (источник + путь + пакет + версия)
         - Все CVE склеиваются в одну ячейку через перенос строки
-        - Используется group_vulnerabilities_by_artifact()
 
-    Для diff режимов (full, new, removed):
-        - Группировка по (источник + путь + пакет + версия) для объединения ячеек
-        - Каждый CVE - отдельная строка со своим статусом
-        - Пакет, версия и статус пакета - объединенные ячейки
-        - Используется group_vulnerabilities_by_package_for_diff()
+    Для diff режимов:
+        - 'full': полный отчет с объединением срока устранения по группе
+        - 'new': только NEW, без колонок "Срок устранения" и "Статус"
+        - 'removed': только REMOVED, без колонок "Срок устранения" и "Статус"
     """
-    # Загружаем обогащенный отчет
     with open(enriched_trivy_path, 'r', encoding='utf-8-sig') as f:
         trivy_data = json.load(f)
 
-    # Создаем лист
     ws = workbook.create_sheet(sheet_name)
 
-    # Собираем уязвимости с учетом diff статусов
     all_vulnerabilities = collect_all_vulnerabilities_with_diff(trivy_data, diff_mode)
 
-    # Группируем в зависимости от режима
     if diff_mode == 'standard':
-        # Старая логика - группировка по артефакту (источник + путь + пакет + версия)
-        # Все CVE склеиваются в одну ячейку
         grouped_vulnerabilities = group_vulnerabilities_by_artifact(all_vulnerabilities)
     else:
-        # Для diff - группировка по артефакту, но каждая CVE отдельной строкой
-        # Пакет, версия и статус пакета объединяются
         grouped_vulnerabilities = group_vulnerabilities_by_package_for_diff(all_vulnerabilities)
 
-    # Получаем имя артефакта и текущую дату
     artifact_name = get_artifact_name(Path(enriched_trivy_path).name)
     current_date = datetime.now()
 
-    # Определяем описание для информационного блока
     if diff_mode == 'new':
         description = "📌 НОВЫЕ уязвимости и пакеты, появившиеся во втором сканировании"
     elif diff_mode == 'removed':
@@ -1157,12 +1137,13 @@ def add_sca_sheet(workbook, enriched_trivy_path, sheet_name="SCA Анализ", 
     else:
         description = "Необходимо обновить уязвимые компоненты до актуальных версий в указанный срок или обосновать отсутствие такой возможности"
 
-    # Добавляем информационный блок
     add_info_block(ws, artifact_name, current_date, description, diff_mode)
 
-    # Определяем заголовки (с дополнительными колонками для diff)
+    # Определяем заголовки
     if diff_mode == 'standard':
         headers = SCA_COLUMN_HEADERS
+    elif diff_mode in ['new', 'removed']:
+        headers = SCA_DIFF_SHORT_COLUMN_HEADERS
     else:
         headers = SCA_DIFF_COLUMN_HEADERS
 
@@ -1208,15 +1189,13 @@ def add_sca_sheet(workbook, enriched_trivy_path, sheet_name="SCA Анализ", 
         cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
         col += 1
 
-        # Для diff режимов добавляем колонку со статусом пакета
+        # Статус пакета (только для diff режимов)
         if diff_mode != 'standard':
-            # Статус пакета
             pkg_status = vuln.get('package_change_type', '')
             cell = ws.cell(row=row_num, column=col, value=pkg_status.upper() if pkg_status else '')
             cell.border = CELL_BORDER
             cell.alignment = Alignment(horizontal='center', vertical='center')
 
-            # Применяем цветовое форматирование для статуса пакета
             if pkg_status:
                 apply_change_status_style(cell, pkg_status)
             col += 1
@@ -1227,15 +1206,13 @@ def add_sca_sheet(workbook, enriched_trivy_path, sheet_name="SCA Анализ", 
         cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
         col += 1
 
-        # Для diff режимов добавляем колонку со статусом уязвимости
+        # Статус уязвимости (только для diff режимов)
         if diff_mode != 'standard':
-            # Статус уязвимости (индивидуальный для каждого CVE)
             vuln_status = vuln.get('vuln_status', '')
             cell = ws.cell(row=row_num, column=col, value=vuln_status.upper() if vuln_status else '')
             cell.border = CELL_BORDER
             cell.alignment = Alignment(horizontal='center', vertical='center')
 
-            # Применяем цветовое форматирование для статуса уязвимости
             if vuln_status:
                 apply_change_status_style(cell, vuln_status)
             col += 1
@@ -1246,51 +1223,55 @@ def add_sca_sheet(workbook, enriched_trivy_path, sheet_name="SCA Анализ", 
         cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
         col += 1
 
-        # Срок устранения
-        remediation_value = vuln['remediation_period']
-        cell = ws.cell(row=row_num, column=col, value=remediation_value)
-        cell.border = CELL_BORDER
-        cell.alignment = Alignment(horizontal='center', vertical='center')
+        # ===== СРОК УСТРАНЕНИЯ (только для 'standard' и 'full') =====
+        if diff_mode in ['standard', 'full']:
+            if diff_mode == 'standard':
+                cell = ws.cell(row=row_num, column=col, value=vuln['remediation_period'])
+                cell.border = CELL_BORDER
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+            else:  # full (diff)
+                # Значение и объединение будут проставлены позже в merge_remediation_column
+                cell = ws.cell(row=row_num, column=col)
+                cell.border = CELL_BORDER
+                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            col += 1
 
-        # ===== НОВОЕ: СТИЛИЗАЦИЯ ДЛЯ UNCHANGED С ОСТАТОЧНЫМ СРОКОМ =====
-        if diff_mode != 'standard':
-            remaining_days = vuln.get('remaining_days')
-            vuln_status = vuln.get('vuln_status', '')
-            # Для UNCHANGED уязвимостей применяем стиль к ячейке срока устранения
-            if vuln_status == 'unchanged' and remaining_days is not None:
-                style = get_remaining_days_style(remaining_days)
-                if style:
-                    cell.fill = style
-        col += 1
-
-        # Статус
-        cell = ws.cell(row=row_num, column=col, value=vuln['status'])
-        cell.border = CELL_BORDER
-        cell.alignment = Alignment(horizontal='center', vertical='center')
-        col += 1
+        # Статус (только для 'standard' и 'full')
+        if diff_mode in ['standard', 'full']:
+            cell = ws.cell(row=row_num, column=col, value=vuln['status'])
+            cell.border = CELL_BORDER
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+            col += 1
 
         # Комментарий
         cell = ws.cell(row=row_num, column=col, value=vuln['comment'])
         cell.border = CELL_BORDER
         cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
-    # Для diff режимов объединяем ячейки
+    # Объединение ячеек для diff режимов (пакет/версия/статус пакета)
     if diff_mode != 'standard' and grouped_vulnerabilities:
-        merge_package_cells(ws, grouped_vulnerabilities, start_row + 1, col_package=4, col_version=5, col_status=6)
+        merge_package_cells(
+            ws, grouped_vulnerabilities, start_row + 1,
+            col_package=4, col_version=5, col_status=6
+        )
 
-    # Добавляем выпадающие списки для колонки "Статус" только для полного отчета
+    # Объединение срока устранения для 'full'
+    if diff_mode == 'full' and grouped_vulnerabilities:
+        merge_remediation_column(
+            ws, grouped_vulnerabilities, start_row + 1,
+            col_remediation=10
+        )
+
+    # Выпадающие списки только для standard
     if grouped_vulnerabilities and diff_mode == 'standard':
         add_dropdown_lists(ws, len(grouped_vulnerabilities), start_row, workbook)
 
-    # Настраиваем ширину колонок
     set_sca_column_widths(ws, diff_mode)
 
-    # Добавляем фильтры
     if grouped_vulnerabilities:
         last_col = len(headers)
         ws.auto_filter.ref = f"A{start_row}:{get_column_letter(last_col)}{len(grouped_vulnerabilities) + start_row}"
 
-    # Замораживаем строку с заголовками
     ws.freeze_panes = f'A{start_row + 1}'
 
 
@@ -1299,12 +1280,11 @@ def set_sca_column_widths(worksheet, diff_mode='standard'):
     Устанавливает ширину колонок для SCA листа
     """
     if diff_mode == 'standard':
-        # Без diff - 10 колонок
         for col, width in SCA_COLUMN_WIDTHS.items():
             worksheet.column_dimensions[col].width = width
-    else:
-        # С diff - 12 колонок
-        base_widths = {
+    elif diff_mode in ['new', 'removed']:
+        # 10 колонок (без "Срок устранения" и "Статус")
+        short_widths = {
             'A': 8,
             'B': 40,
             'C': 50,
@@ -1314,11 +1294,26 @@ def set_sca_column_widths(worksheet, diff_mode='standard'):
             'G': 20,
             'H': 18,
             'I': 15,
-            'J': 20,
+            'J': 45
+        }
+        for col, width in short_widths.items():
+            worksheet.column_dimensions[col].width = width
+    else:  # full
+        full_widths = {
+            'A': 8,
+            'B': 40,
+            'C': 50,
+            'D': 35,
+            'E': 20,
+            'F': 18,
+            'G': 20,
+            'H': 18,
+            'I': 15,
+            'J': 25,
             'K': 25,
             'L': 45
         }
-        for col, width in base_widths.items():
+        for col, width in full_widths.items():
             worksheet.column_dimensions[col].width = width
 
 
@@ -1334,15 +1329,13 @@ def apply_change_status_style(cell, status):
     """
     Применяет цветовое форматирование для статусов изменений
     """
-    # Нормализуем статус (приводим к нижнему регистру)
     status_lower = status.lower().strip()
 
-    # Цвета для статусов
     status_colors = {
-        'new': 'ffc7ce',      # красный
-        'unchanged': 'ffeb9c', # желтый
-        'updated': '70a1db',   # синий
-        'removed': 'c6efce'    # зеленый
+        'new': 'ffc7ce',
+        'unchanged': 'ffeb9c',
+        'updated': '70a1db',
+        'removed': 'c6efce'
     }
 
     color = status_colors.get(status_lower)
@@ -1364,7 +1357,6 @@ def main():
 
     config = load_config()
 
-    # Проверяем аргументы командной строки
     if len(sys.argv) > 1:
         enriched_path = Path(sys.argv[1])
         output_dir = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(config.get('output_directory', './reports'))
@@ -1379,7 +1371,6 @@ def main():
         else:
             print(f"❌ Файл не найден: {enriched_path}")
     else:
-        # Тестовый режим - ищем все enriched файлы
         script_dir = Path(__file__).parent
         enriched_files = list(script_dir.glob("*_enriched.json"))
 
