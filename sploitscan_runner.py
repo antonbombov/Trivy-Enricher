@@ -24,7 +24,7 @@ def setup_sploitscan_logging(cve_id, attempt):
 
     # Создаем папку logs внутри output_directory
     log_dir = output_dir / "logs"
-    log_dir.mkdir(exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     # Создаем уникальный лог-файл для каждой попытки CVE
     log_file = log_dir / f"sploitscan_{cve_id}_attempt{attempt}.log"
@@ -36,15 +36,13 @@ def read_output(process, log_file):
     try:
         with open(log_file, 'a', encoding='utf-8') as log_f:
             while True:
-                # Читаем вывод построчно
                 output = process.stdout.readline()
                 if output == '' and process.poll() is not None:
                     break
                 if output:
                     log_f.write(output)
-                    log_f.flush()  # Важно: сбрасываем буфер после каждой записи
+                    log_f.flush()
     except Exception as e:
-        # Если что-то пошло не так при записи лога
         with open(log_file, 'a', encoding='utf-8') as log_f:
             log_f.write(f"\n*** LOGGING ERROR: {str(e)} ***\n")
 
@@ -53,6 +51,9 @@ def run_sploitscan(cve_id, target_dir, attempt=1):
     """
     Запускает sploitscan для CVE (кросс-платформенно)
     attempt - номер попытки (для логирования)
+
+    ВАЖНО: SploitScan запускается с cwd=target_dir, чтобы он писал
+    свой JSON сразу в папку кэша (а не в /sploitscan/).
     """
     try:
         config = load_config()
@@ -61,7 +62,7 @@ def run_sploitscan(cve_id, target_dir, attempt=1):
         if not sploitscan_path:
             return {'status': 'failed', 'error': 'SploitScan не найден'}
 
-        # Создаем целевую папку
+        # Создаем целевую папку (кэш)
         target_dir.mkdir(parents=True, exist_ok=True)
 
         # Проверяем кэш (только для первой попытки)
@@ -78,20 +79,35 @@ def run_sploitscan(cve_id, target_dir, attempt=1):
         env['PYTHONIOENCODING'] = 'utf-8'
         env['PYTHONUTF8'] = '1'
 
-        # Определяем команду и рабочую директорию
+        # Определяем команду
         if sploitscan_path.endswith('.py'):
             cmd = ['python', sploitscan_path, "-e", "json", cve_id]
-            cwd = Path(sploitscan_path).parent
+            sploitscan_dir = Path(sploitscan_path).parent
         else:
             cmd = [sploitscan_path, "-e", "json", cve_id]
-            cwd = Path(__file__).parent
+            sploitscan_dir = Path(sploitscan_path).parent
+
+        # Добавляем директорию SploitScan в PYTHONPATH,
+        # чтобы Python нашёл модули sploitscan.* даже при запуске из другой cwd
+        existing_pythonpath = env.get('PYTHONPATH', '')
+        if existing_pythonpath:
+            env['PYTHONPATH'] = f"{sploitscan_dir}{os.pathsep}{existing_pythonpath}"
+        else:
+            env['PYTHONPATH'] = str(sploitscan_dir)
+
+        # КЛЮЧЕВОЕ: запускаем SploitScan с рабочей директорией = target_dir (кэш).
+        # Тогда SploitScan пишет "./xxx_export.json" прямо в кэш,
+        # а не в /sploitscan/ (где под --user нет прав).
+        run_cwd = target_dir
 
         # Записываем информацию о запуске
         with open(log_file, 'w', encoding='utf-8') as log_f:
             log_f.write(f"=== SploitScan execution for {cve_id} ===\n")
             log_f.write(f"Attempt: {attempt}\n")
             log_f.write(f"Command: {' '.join(cmd)}\n")
-            log_f.write(f"Working directory: {cwd}\n")
+            log_f.write(f"SploitScan dir: {sploitscan_dir}\n")
+            log_f.write(f"Working directory (cwd): {run_cwd}\n")
+            log_f.write(f"PYTHONPATH: {env['PYTHONPATH']}\n")
             log_f.write(f"Start time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
             log_f.write(f"Timeout: {config.get('timeout', 60)} seconds\n")
             log_f.write("=" * 50 + "\n\n")
@@ -100,32 +116,27 @@ def run_sploitscan(cve_id, target_dir, attempt=1):
         # Запускаем sploitscan с записью вывода в реальном времени
         start_time = time.time()
 
-        # Запускаем процесс с PIPE для перехвата вывода
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,  # объединяем stdout и stderr
+            stderr=subprocess.STDOUT,
             encoding='utf-8',
             env=env,
-            cwd=str(cwd),
-            bufsize=1,  # построчная буферизация
+            cwd=str(run_cwd),           # ← ИЗМЕНЕНО: было cwd=str(cwd)
+            bufsize=1,
             universal_newlines=True
         )
 
-        # Запускаем поток для чтения вывода в реальном времени
         log_thread = threading.Thread(target=read_output, args=(process, log_file))
         log_thread.daemon = True
         log_thread.start()
 
         try:
-            # Ждем завершения процесса с таймаутом
             returncode = process.wait(timeout=config.get('timeout', 60))
             execution_time = time.time() - start_time
 
-            # Дожидаемся завершения потока логирования
             log_thread.join(timeout=5)
 
-            # Записываем информацию о завершении
             with open(log_file, 'a', encoding='utf-8') as log_f:
                 log_f.write(f"\n" + "=" * 50 + "\n")
                 log_f.write(f"Return code: {returncode}\n")
@@ -133,24 +144,34 @@ def run_sploitscan(cve_id, target_dir, attempt=1):
                 log_f.write(f"Execution time: {execution_time:.2f}s\n")
 
             if returncode == 0:
-                # Ищем созданный файл
-                json_files = list(cwd.glob(f"*{cve_id}*.json"))
+                # Ищем созданный файл в target_dir (там же, где запускался SploitScan)
+                json_files = list(run_cwd.glob(f"*{cve_id}*.json"))
 
                 if json_files:
                     source_file = json_files[0]
-                    target_file = target_dir / source_file.name
-                    shutil.move(str(source_file), str(target_file))
-                    return {'status': 'success', 'file': target_file, 'execution_time': execution_time,
-                            'attempt': attempt}
+                    # Файл уже в кэше — просто возвращаем путь
+                    return {
+                        'status': 'success',
+                        'file': source_file,
+                        'execution_time': execution_time,
+                        'attempt': attempt
+                    }
                 else:
-                    return {'status': 'failed', 'error': 'JSON файл не создан', 'execution_time': execution_time,
-                            'attempt': attempt}
+                    return {
+                        'status': 'failed',
+                        'error': 'JSON файл не создан',
+                        'execution_time': execution_time,
+                        'attempt': attempt
+                    }
             else:
-                return {'status': 'failed', 'error': f'Process exited with code {returncode}',
-                        'execution_time': execution_time, 'attempt': attempt}
+                return {
+                    'status': 'failed',
+                    'error': f'Process exited with code {returncode}',
+                    'execution_time': execution_time,
+                    'attempt': attempt
+                }
 
         except subprocess.TimeoutExpired:
-            # При таймауте убиваем процесс
             process.terminate()
             try:
                 process.wait(timeout=5)
@@ -160,17 +181,19 @@ def run_sploitscan(cve_id, target_dir, attempt=1):
 
             execution_time = time.time() - start_time
 
-            # Записываем информацию о таймауте
             with open(log_file, 'a', encoding='utf-8') as log_f:
                 log_f.write(f"\n\n*** TIMEOUT EXPIRED after {config.get('timeout', 60)} seconds ***\n")
                 log_f.write(f"Process was terminated\n")
                 log_f.write(f"Partial execution time: {execution_time:.2f}s\n")
 
-            return {'status': 'failed', 'error': 'Timeout expired', 'execution_time': execution_time,
-                    'attempt': attempt}
+            return {
+                'status': 'failed',
+                'error': 'Timeout expired',
+                'execution_time': execution_time,
+                'attempt': attempt
+            }
 
     except Exception as e:
-        # Записываем исключение в лог
         log_file = setup_sploitscan_logging(cve_id, attempt)
         with open(log_file, 'a', encoding='utf-8') as log_f:
             log_f.write(f"\n*** EXCEPTION: {str(e)} ***\n")
