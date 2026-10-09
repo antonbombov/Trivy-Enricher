@@ -34,15 +34,10 @@ def interactive_file_selection(scan_dir: Path, prompt: str, exclude: List[str] =
         dirs = []
         for item in sorted(current_dir.iterdir()):
             if item.is_dir() and not item.name.startswith('.'):
-                # Проверяем, есть ли в каталоге JSON файлы (кроме config.json и diff_report)
+                # Проверяем, есть ли в каталоге JSON файлы (кроме config.json)
                 has_json = False
                 for f in item.glob("*.json"):
                     if f.name == 'config.json':
-                        continue
-                    # Исключаем diff отчеты (старый формат diff_report*.json и новый формат *_diff*.json)
-                    if f.name.startswith('diff_report') or '_diff' in f.name:
-                        if exclude and f.name in exclude:
-                            continue
                         continue
                     if exclude and f.name in exclude:
                         continue
@@ -51,15 +46,10 @@ def interactive_file_selection(scan_dir: Path, prompt: str, exclude: List[str] =
                 if has_json:
                     dirs.append(('dir', item.name, item))
 
-        # Собираем JSON файлы
+        # Собираем JSON файлы (включая diff-отчеты: их можно подавать как baseline)
         files = []
         for item in sorted(current_dir.glob("*.json")):
             if item.name == 'config.json':
-                continue
-            # Исключаем diff отчеты (старый формат diff_report*.json и новый формат *_diff*.json)
-            if item.name.startswith('diff_report') or '_diff' in item.name:
-                if exclude and item.name in exclude:
-                    continue
                 continue
             if exclude and item.name in exclude:
                 continue

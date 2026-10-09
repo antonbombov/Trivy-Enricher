@@ -160,8 +160,9 @@ def get_min_remediation_days_for_group(vulns):
     Вычисляет минимальный срок устранения для группы CVE.
 
     Для каждой CVE:
-    - NEW: срок = get_remediation_days(severity, has_exploits)
-    - UNCHANGED: срок = remaining_days (может быть отрицательным)
+    - если известен остаточный срок (remaining_days) — берется он,
+      в том числе для новых уязвимостей, вернувшихся после устранения;
+    - иначе для NEW: срок = get_remediation_days(severity, has_exploits)
 
     Возвращает:
         (min_days, source_type, display_text)
@@ -178,12 +179,11 @@ def get_min_remediation_days_for_group(vulns):
         severity = vuln.get('severity', 'UNKNOWN')
         has_exploits = vuln.get('has_exploits', False)
 
-        if vuln_status == 'unchanged':
-            remaining = vuln.get('remaining_days')
-            if remaining is None:
-                continue
+        remaining = vuln.get('remaining_days')
+
+        if remaining is not None:
             days = remaining
-            source = 'unchanged'
+            source = 'remaining'
         elif vuln_status == 'new':
             days = get_remediation_days(severity, has_exploits)
             source = 'new'
@@ -198,7 +198,7 @@ def get_min_remediation_days_for_group(vulns):
     if min_days is None:
         return None, None, ''
 
-    if min_source == 'unchanged':
+    if min_source == 'remaining':
         if min_days >= 0:
             display_text = f"{min_days} дн."
         else:
@@ -636,7 +636,7 @@ def collect_all_vulnerabilities_with_diff(trivy_data, diff_mode='standard'):
 
             severity = vuln.get('Severity', 'UNKNOWN')
 
-            if vuln_change_type == 'unchanged' and remaining_days is not None:
+            if remaining_days is not None:
                 remediation_display = format_remaining_days(remaining_days)
             else:
                 remediation_display = get_remediation_period(severity, has_exploits)
@@ -1060,7 +1060,7 @@ def merge_remediation_column(worksheet, data, start_row, col_remediation):
         min_days = vuln.get('group_min_days')
         min_source = vuln.get('group_min_source')
 
-        if min_days is not None and min_source == 'unchanged':
+        if min_days is not None and min_source == 'remaining':
             style = get_remaining_days_style(min_days)
             if style:
                 cell.fill = style

@@ -6,6 +6,10 @@ Trivy Diff Analyzer
 - JAR-сканирования (идентификация по PkgName + UID)
 - Поиск пакетов по имени в секции Packages для определения UPDATED
 - Расчет остаточного срока устранения для уязвимостей со статусом UNCHANGED
+- Сравнение diff-отчета с обычным отчетом Trivy: diff-отчет определяется
+  по наличию _diff_metadata, используется как baseline (первое состояние)
+- Перенос остаточного срока предыдущего анализа и ведение истории
+  удаленных уязвимостей и пакетов
 """
 
 import json
@@ -33,10 +37,23 @@ class TrivyDiffAnalyzer:
         self.report2_path = report2_path
         self.debug = debug
 
-        self.report1 = self._load_report(report1_path)
-        self.report2 = self._load_report(report2_path)
+        # Загружаем отчеты как есть
+        self.report1_raw = self._load_report(report1_path)
+        self.report2_raw = self._load_report(report2_path)
+
+        # Метаданные и история предыдущего сравнения (если baseline - diff-отчет)
+        self.baseline_meta = self._extract_diff_metadata(self.report1_raw)
+        self.baseline_history = self._extract_history(self.baseline_meta)
+
+        # Для анализа используются нормализованные отчеты: из diff-отчета
+        # удаляются служебные поля и секции предыдущего сравнения
+        self.report1 = self._normalize_report(self.report1_raw)
+        self.report2 = self._normalize_report(self.report2_raw)
 
         self.report_type = self._detect_report_type()
+
+        # Данные предыдущего анализа по уязвимостям baseline (первое обнаружение, остаток срока)
+        self.baseline_vuln_meta = self._collect_baseline_vuln_meta(self.report1_raw)
 
         # Парсим start_date (дата выявления)
         self.start_date = None
@@ -94,6 +111,91 @@ class TrivyDiffAnalyzer:
             print(f"Error loading {path}: {e}", file=sys.stderr)
             sys.exit(1)
 
+    def _extract_diff_metadata(self, report: Dict) -> Optional[Dict]:
+        """Возвращает блок _diff_metadata, если отчет является diff-отчетом"""
+        meta = report.get('_diff_metadata')
+        return meta if isinstance(meta, dict) else None
+
+    def _extract_history(self, meta: Optional[Dict]) -> Dict:
+        """Возвращает историю предыдущих сравнений (если она есть в метаданных)"""
+        if not meta:
+            return {'vulnerabilities': {}, 'packages': {}}
+
+        history = meta.get('history') or {}
+        return {
+            'vulnerabilities': dict(history.get('vulnerabilities') or {}),
+            'packages': dict(history.get('packages') or {})
+        }
+
+    def _normalize_report(self, report: Dict) -> Dict:
+        """
+        Приводит отчет к виду обычного отчета Trivy.
+
+        Для diff-отчета:
+        - удаляются секции предыдущего сравнения (Type/Class == removed),
+          чтобы уже устраненные уязвимости не попадали в baseline;
+        - с уязвимостей снимаются служебные поля diff-анализа.
+        """
+        normalized = deepcopy(report)
+
+        results = normalized.get('Results')
+        if isinstance(results, list):
+            filtered = []
+            for result in results:
+                if not isinstance(result, dict):
+                    continue
+                if result.get('Type') == 'removed' or result.get('Class') == 'removed':
+                    continue
+                filtered.append(result)
+            normalized['Results'] = filtered
+
+        for result in normalized.get('Results', []):
+            for vuln in result.get('Vulnerabilities', []):
+                for field in ('_change_type', '_vuln_key', '_package_change_type',
+                              '_package_version_change', '_remaining_days', '_first_seen'):
+                    vuln.pop(field, None)
+
+        normalized.pop('_diff_metadata', None)
+
+        return normalized
+
+    def _collect_baseline_vuln_meta(self, report: Dict) -> Dict[str, Dict]:
+        """
+        Собирает данные предыдущего анализа по уязвимостям diff-отчета:
+        остаток срока и дату первого обнаружения.
+        """
+        meta = {}
+
+        for result in report.get('Results', []):
+            if not isinstance(result, dict):
+                continue
+            if result.get('Type') == 'removed' or result.get('Class') == 'removed':
+                continue
+
+            for vuln in result.get('Vulnerabilities', []):
+                vuln_id = vuln.get('VulnerabilityID')
+                pkg_name = vuln.get('PkgName')
+                pkg_uid = vuln.get('PkgIdentifier', {}).get('UID', '')
+                if not vuln_id or not pkg_name:
+                    continue
+
+                vuln_key = self._build_vuln_key(vuln_id, pkg_name, pkg_uid)
+                meta[vuln_key] = {
+                    'remaining_days': vuln.get('_remaining_days'),
+                    'first_seen': self._parse_date(vuln.get('_first_seen'))
+                }
+
+        return meta
+
+    def _parse_date(self, value) -> Optional[datetime.date]:
+        """Разбирает дату из строки формата ГГГГ-ММ-ДД"""
+        if not value or not isinstance(value, str):
+            return None
+        try:
+            return datetime.strptime(value[:10], '%Y-%m-%d').date()
+        except ValueError:
+            return None
+
     def _detect_report_type(self) -> str:
         """Определяет тип отчета по наличию PkgPath"""
         for result in self.report1.get('Results', []):
@@ -135,7 +237,8 @@ class TrivyDiffAnalyzer:
 
         return months * 30  # 30 дней в месяце
 
-    def _calculate_remaining_days(self, severity: str, has_exploits: bool) -> Optional[int]:
+    def _calculate_remaining_days(self, severity: str, has_exploits: bool,
+                                  start_override: Optional[datetime.date] = None) -> Optional[int]:
         """
         Вычисляет остаточный срок в днях.
 
@@ -150,7 +253,9 @@ class TrivyDiffAnalyzer:
         Если remaining_days <= 0 → просрочка
         """
         # Берем start_date из первого отчета (если не указана)
-        if self.start_date:
+        if start_override:
+            start_date = start_override
+        elif self.start_date:
             start_date = self.start_date
         else:
             start_date = self.created_date_report1
@@ -172,6 +277,89 @@ class TrivyDiffAnalyzer:
 
         # Остаток в днях (от due_date до end_date)
         return (due_date - end_date).days
+
+    def _resolve_end_date(self) -> Optional[datetime.date]:
+        """Дата устранения (контрольная дата) текущего сравнения"""
+        return self.end_date or self.created_date_report2
+
+    def _resolve_baseline_end_date(self) -> Optional[datetime.date]:
+        """
+        Дата устранения, использованная в предыдущем diff-анализе
+        (нужна для переноса остатка срока)
+        """
+        if not self.baseline_meta:
+            return None
+
+        raw_end = self.baseline_meta.get('end_date')
+        if isinstance(raw_end, str) and raw_end != 'from_report2_created_date':
+            parsed = self._parse_date(raw_end)
+            if parsed:
+                return parsed
+
+        report2_meta = self.baseline_meta.get('report2') or {}
+        return self._parse_date(report2_meta.get('created_date'))
+
+    def _resolve_baseline_start_date(self) -> Optional[datetime.date]:
+        """
+        Дата выявления, использованная в предыдущем diff-анализе
+        (нужна как дата первого обнаружения для унаследованных уязвимостей)
+        """
+        if not self.baseline_meta:
+            return None
+
+        raw_start = self.baseline_meta.get('start_date')
+        if isinstance(raw_start, str) and raw_start != 'from_report1_created_date':
+            parsed = self._parse_date(raw_start)
+            if parsed:
+                return parsed
+
+        report1_meta = self.baseline_meta.get('report1') or {}
+        return self._parse_date(report1_meta.get('created_date'))
+
+    def _carry_over_remaining_days(self, vuln_key: str) -> Optional[int]:
+        """
+        Переносит остаток срока из предыдущего diff-анализа, уменьшая его
+        на количество дней, прошедших между контрольными датами.
+
+        Если в baseline остаток не рассчитывался, вернется None —
+        срок будет посчитан от даты первого обнаружения.
+        """
+        baseline = self.baseline_vuln_meta.get(vuln_key)
+        if not baseline or baseline.get('remaining_days') is None:
+            return None
+
+        baseline_end = self._resolve_baseline_end_date()
+        current_end = self._resolve_end_date()
+
+        if not baseline_end or not current_end:
+            return baseline['remaining_days']
+
+        elapsed = (current_end - baseline_end).days
+        return baseline['remaining_days'] - elapsed
+
+    def _resolve_first_seen(self, vuln_key: str, change_type: ChangeType) -> Optional[datetime.date]:
+        """
+        Дата первого обнаружения уязвимости.
+
+        - для унаследованных уязвимостей берется из предыдущего анализа,
+          иначе используется дата выявления baseline;
+        - для новых уязвимостей берется из истории (если уязвимость
+          уже появлялась ранее), иначе — контрольная дата текущего сравнения.
+        """
+        baseline = self.baseline_vuln_meta.get(vuln_key)
+        if change_type == ChangeType.UNCHANGED and baseline and baseline.get('first_seen'):
+            return baseline['first_seen']
+
+        history_entry = self.baseline_history['vulnerabilities'].get(vuln_key)
+        if history_entry:
+            parsed = self._parse_date(history_entry.get('first_seen'))
+            if parsed:
+                return parsed
+
+        if change_type == ChangeType.UNCHANGED:
+            return self._resolve_baseline_start_date() or self.start_date or self.created_date_report1
+
+        return self._resolve_end_date()
 
     def _has_exploits_from_vuln(self, vuln: Dict) -> bool:
         """Проверяет наличие эксплойтов в уязвимости"""
@@ -423,8 +611,13 @@ class TrivyDiffAnalyzer:
                         pkg_key = self._build_pkg_key(pkg_name, pkg_uid)
 
                         if vuln_key in self.vuln_changes:
-                            vuln['_change_type'] = self.vuln_changes[vuln_key].value
+                            change_type = self.vuln_changes[vuln_key]
+                            vuln['_change_type'] = change_type.value
                             vuln['_vuln_key'] = vuln_key
+
+                            first_seen = self._resolve_first_seen(vuln_key, change_type)
+                            if first_seen:
+                                vuln['_first_seen'] = first_seen.isoformat()
 
                         if pkg_key in self.package_changes:
                             vuln['_package_change_type'] = self.package_changes[pkg_key].value
@@ -439,16 +632,37 @@ class TrivyDiffAnalyzer:
                                         'new_version': new_version
                                     }
 
-                        # ===== РАСЧЕТ ОСТАТОЧНОГО СРОКА ДЛЯ UNCHANGED =====
-                        if self.vuln_changes.get(vuln_key) == ChangeType.UNCHANGED:
-                            severity = vuln.get('Severity', 'UNKNOWN')
-                            has_exploits = self._has_exploits_from_vuln(vuln)
-                            remaining_days = self._calculate_remaining_days(severity, has_exploits)
+                        # ===== РАСЧЕТ ОСТАТОЧНОГО СРОКА =====
+                        change_type = self.vuln_changes.get(vuln_key)
+                        if change_type == ChangeType.UNCHANGED:
+                            # Сначала пробуем перенести остаток из предыдущего анализа
+                            remaining_days = self._carry_over_remaining_days(vuln_key)
+
+                            if remaining_days is None:
+                                severity = vuln.get('Severity', 'UNKNOWN')
+                                has_exploits = self._has_exploits_from_vuln(vuln)
+                                remaining_days = self._calculate_remaining_days(severity, has_exploits)
 
                             if remaining_days is not None:
                                 vuln['_remaining_days'] = remaining_days
                                 if self.debug:
                                     print(f"   🔄 {vuln_id}: remaining_days = {remaining_days}")
+                        elif change_type == ChangeType.NEW:
+                            # Для новых уязвимостей срок считается от даты первого
+                            # обнаружения: у вернувшейся уязвимости она берется
+                            # из истории, поэтому срок сразу показывает просрочку
+                            first_seen = self._parse_date(vuln.get('_first_seen'))
+                            if first_seen and first_seen != self._resolve_end_date():
+                                severity = vuln.get('Severity', 'UNKNOWN')
+                                has_exploits = self._has_exploits_from_vuln(vuln)
+                                remaining_days = self._calculate_remaining_days(
+                                    severity, has_exploits, start_override=first_seen
+                                )
+
+                                if remaining_days is not None:
+                                    vuln['_remaining_days'] = remaining_days
+                                    if self.debug:
+                                        print(f"   ➕ {vuln_id}: remaining_days = {remaining_days}")
 
         removed_vulns = []
         for vuln_key, change_type in self.vuln_changes.items():
@@ -500,7 +714,8 @@ class TrivyDiffAnalyzer:
                 'path': str(self.report2_path),
                 'timestamp': datetime.fromtimestamp(Path(self.report2_path).stat().st_mtime).isoformat(),
                 'created_date': self.created_date_report2.isoformat() if self.created_date_report2 else None
-            }
+            },
+            'history': self._build_history(removed_vulns)
         }
 
         # Добавляем информацию о датах
@@ -515,6 +730,77 @@ class TrivyDiffAnalyzer:
             diff_report['_diff_metadata']['end_date'] = 'from_report2_created_date'
 
         return diff_report
+
+    def _build_history(self, removed_vulns: list) -> Dict:
+        """
+        Формирует историю удаленных уязвимостей и пакетов.
+
+        История наследуется из baseline (если это diff-отчет) и дополняется
+        удалениями текущего сравнения.
+        """
+        removed_at = self._resolve_end_date()
+        removed_at_str = removed_at.isoformat() if removed_at else None
+
+        vuln_history = {
+            key: dict(entry)
+            for key, entry in self.baseline_history['vulnerabilities'].items()
+        }
+        pkg_history = {
+            key: dict(entry)
+            for key, entry in self.baseline_history['packages'].items()
+        }
+
+        for vuln_data in removed_vulns:
+            vuln_id = vuln_data.get('VulnerabilityID')
+            pkg_name = vuln_data.get('PkgName')
+            pkg_uid = vuln_data.get('PkgIdentifier', {}).get('UID', '')
+            vuln_key = self._build_vuln_key(vuln_id, pkg_name, pkg_uid)
+            if not vuln_key:
+                continue
+
+            entry = vuln_history.get(vuln_key)
+            if entry is None:
+                entry = {
+                    'vulnerability_id': vuln_id,
+                    'pkg_name': pkg_name,
+                    'installed_version': vuln_data.get('InstalledVersion'),
+                    'severity': vuln_data.get('Severity', 'UNKNOWN'),
+                    'target': vuln_data.get('PkgPath') or vuln_data.get('FilePath'),
+                    'first_seen': vuln_data.get('_first_seen'),
+                    'removed_count': 0
+                }
+
+            entry['last_removed_at'] = removed_at_str
+            entry['removed_count'] = int(entry.get('removed_count') or 0) + 1
+            vuln_history[vuln_key] = entry
+
+        for pkg_key, change_type in self.package_changes.items():
+            if change_type != ChangeType.REMOVED:
+                continue
+
+            pkg_data = self.packages1.get(pkg_key)
+            if not pkg_data:
+                continue
+
+            entry = pkg_history.get(pkg_key)
+            if entry is None:
+                entry = {
+                    'pkg_name': pkg_data.get('name'),
+                    'version': pkg_data.get('version'),
+                    'path': pkg_data.get('path'),
+                    'first_seen': self._resolve_baseline_start_date().isoformat()
+                    if self._resolve_baseline_start_date() else None,
+                    'removed_count': 0
+                }
+
+            entry['last_removed_at'] = removed_at_str
+            entry['removed_count'] = int(entry.get('removed_count') or 0) + 1
+            pkg_history[pkg_key] = entry
+
+        return {
+            'vulnerabilities': vuln_history,
+            'packages': pkg_history
+        }
 
     def _calculate_stats(self, changes: Dict) -> Dict:
         stats = {'new': 0, 'unchanged': 0, 'updated': 0, 'removed': 0}
