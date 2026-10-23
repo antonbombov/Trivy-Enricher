@@ -251,13 +251,14 @@ def main():
         return
 
     # Если diff активен - запускаем diff анализ
+    diff_only_file = None
     if diff_active and diff_files is not None:
         diff_report = run_diff_mode(scan_dir, diff_files[0], diff_files[1], start_date, end_date)
         if not diff_report:
             print("\n❌ Diff анализ завершился с ошибкой")
-            # Если нет других режимов - выходим
-            if not any([generate_html, generate_excel_flag, ptai_only]):
-                return
+            return
+
+        diff_only_file = diff_report
 
         # Если diff выполнен успешно и нет других режимов - завершаем работу
         if not any([generate_html, generate_excel_flag, ptai_only]):
@@ -335,20 +336,26 @@ def main():
         print(f"   📋 Логи SploitScan: {output_dir / 'logs'}")
 
     # Ищем ВСЕ отчеты в указанной папке scan_dir
-    trivy_files = list(scan_dir.glob("*.json"))
-    # Исключаем только конфиг
-    trivy_files = [f for f in trivy_files if f.name != 'config.json']
+    if diff_only_file is not None:
+        # В режиме diff обрабатывается только созданный diff-отчет,
+        # отчеты, участвовавшие в сравнении, пропускаются
+        trivy_files = [diff_only_file]
+        print(f"\n📄 Режим diff: обрабатывается только diff-отчет:")
+        print(f"   - {diff_only_file.name}")
+    else:
+        trivy_files = list(scan_dir.glob("*.json"))
+        # Исключаем только конфиг
+        trivy_files = [f for f in trivy_files if f.name != 'config.json']
 
-    if not trivy_files:
-        print(f"\n❌ Нет отчетов Trivy в папке: {scan_dir}")
-        print("   Поместите JSON отчеты Trivy в указанную папку")
-        return
+        if not trivy_files:
+            print(f"\n❌ Нет отчетов Trivy в папке: {scan_dir}")
+            print("   Поместите JSON отчеты Trivy в указанную папку")
+            return
 
-    print(f"\n📄 Найдено отчетов для обработки: {len(trivy_files)}")
-    for f in trivy_files:
-        print(f"   - {f.name}")
+        print(f"\n📄 Найдено отчетов для обработки: {len(trivy_files)}")
+        for f in trivy_files:
+            print(f"   - {f.name}")
 
-    # Обрабатываем ВСЕ отчеты (включая diff)
     total_start_time = time.time()
     processed, html_created, excel_created = process_reports(
         trivy_files, args, config, output_dir, cache_dir

@@ -5,7 +5,7 @@
   "output_directory": "d:\\Work\\scripts\\TVE\\results",
   "cache_max_days": 30,
   "max_workers": null,
-  "timeout": 60,
+  "timeout": 120,
   "project_version": "0.8.1.0",
   "sploitscan_version": "0.14.3_enhanced"
 }

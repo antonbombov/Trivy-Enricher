@@ -8,8 +8,9 @@ from openpyxl.utils import get_column_letter
 
 from ptai_processor import prepare_ptai_excel_data, PTAIParser
 from excel_styles import (
-    HEADER_FONT, HEADER_FILL, CELL_BORDER, INFO_FONT,
-    apply_header_style, apply_cell_style, SCA_COLUMN_WIDTHS, PTAI_COLUMN_WIDTHS
+    HEADER_FONT, HEADER_FILL, CELL_BORDER, INFO_FONT, NORMAL_FONT,
+    apply_header_style, apply_cell_style, apply_severity_style,
+    SCA_COLUMN_WIDTHS, PTAI_COLUMN_WIDTHS, SCA_HISTORY_COLUMN_WIDTHS
 )
 
 # Константа со статусами для выпадающего списка
@@ -63,6 +64,20 @@ SCA_DIFF_SHORT_COLUMN_HEADERS = [
     "Статус уязвимости",
     "Уровень критичности",
     "Комментарий"
+]
+
+# Имена колонок для листа истории удаленных уязвимостей и пакетов
+SCA_HISTORY_COLUMN_HEADERS = [
+    "№",
+    "Тип",
+    "Идентификатор уязвимости",
+    "Пакет",
+    "Версия",
+    "Уровень критичности",
+    "Источник / Путь",
+    "Впервые выявлена",
+    "Последнее удаление",
+    "Кол-во удалений"
 ]
 
 # Константа с именами колонок для PTAI анализа
@@ -245,9 +260,13 @@ def generate_excel_report(enriched_trivy_path, output_dir, ptai_html_path=None, 
 
             print("   Добавление листа SCA REMOVED (только исчезнувшие уязвимости)...")
             add_sca_sheet(wb, enriched_trivy_path, sheet_name="SCA REMOVED", diff_mode='removed')
+
+            print("   Добавление листа SCA HISTORY (история удалений)...")
+            history_created = add_sca_history_sheet(wb, enriched_trivy_path)
         else:
             print("   Добавление листа SCA Анализ (полный отчет)...")
             add_sca_sheet(wb, enriched_trivy_path, sheet_name="SCA Анализ", diff_mode='standard')
+            history_created = False
 
         # PTAI лист
         if ptai_html_path and Path(ptai_html_path).exists():
@@ -294,6 +313,8 @@ def generate_excel_report(enriched_trivy_path, output_dir, ptai_html_path=None, 
         if has_diff:
             sheets_created.append("SCA NEW")
             sheets_created.append("SCA REMOVED")
+            if history_created:
+                sheets_created.append("SCA HISTORY")
         if ptai_html_path and Path(ptai_html_path).exists() and trivy_name == ptai_name:
             sheets_created.append("PTAI Анализ")
         print(f"   📊 Созданы листы: {', '.join(sheets_created)}")
@@ -894,6 +915,8 @@ def add_info_block(worksheet, artifact_name, current_date, description, diff_mod
         num_cols = len(SCA_COLUMN_HEADERS)
     elif diff_mode in ['new', 'removed']:
         num_cols = len(SCA_DIFF_SHORT_COLUMN_HEADERS)
+    elif diff_mode == 'history':
+        num_cols = len(SCA_HISTORY_COLUMN_HEADERS)
     else:
         num_cols = len(SCA_DIFF_COLUMN_HEADERS)
 
@@ -903,23 +926,26 @@ def add_info_block(worksheet, artifact_name, current_date, description, diff_mod
     worksheet.row_dimensions[4].height = 10
 
 
-def add_dropdown_lists(worksheet, num_rows, start_row, workbook):
+def add_dropdown_lists(worksheet, num_rows, start_row, workbook, status_column='I'):
     """
-    Добавляет выпадающие списки со статусами в колонку I (Статус)
+    Добавляет выпадающие списки со статусами в колонку "Статус"
+
+    status_column — буква колонки со статусом (I для полного отчета, K для diff)
     """
     if num_rows == 0:
         return
 
-    hidden_sheet = workbook.create_sheet("_status_reference")
-    hidden_sheet.sheet_state = 'hidden'
+    if '_status_reference' not in workbook.sheetnames:
+        hidden_sheet = workbook.create_sheet("_status_reference")
+        hidden_sheet.sheet_state = 'hidden'
 
-    for i, status in enumerate(STATUS_OPTIONS, 1):
-        hidden_sheet.cell(row=i, column=1, value=status)
+        for i, status in enumerate(STATUS_OPTIONS, 1):
+            hidden_sheet.cell(row=i, column=1, value=status)
 
     ref_range = f"'_status_reference'!$A$1:$A${len(STATUS_OPTIONS)}"
 
     for row_num in range(start_row + 1, start_row + num_rows + 1):
-        cell_ref = f"I{row_num}"
+        cell_ref = f"{status_column}{row_num}"
 
         dv = openpyxl.worksheet.datavalidation.DataValidation(
             type='list',
@@ -1262,9 +1288,12 @@ def add_sca_sheet(workbook, enriched_trivy_path, sheet_name="SCA Анализ", 
             col_remediation=10
         )
 
-    # Выпадающие списки только для standard
-    if grouped_vulnerabilities and diff_mode == 'standard':
-        add_dropdown_lists(ws, len(grouped_vulnerabilities), start_row, workbook)
+    # Выпадающие списки со статусами (в diff-листе колонка "Статус" сдвинута)
+    if grouped_vulnerabilities:
+        if diff_mode == 'standard':
+            add_dropdown_lists(ws, len(grouped_vulnerabilities), start_row, workbook, status_column='I')
+        elif diff_mode == 'full':
+            add_dropdown_lists(ws, len(grouped_vulnerabilities), start_row, workbook, status_column='K')
 
     set_sca_column_widths(ws, diff_mode)
 
@@ -1323,6 +1352,120 @@ def set_ptai_column_widths(worksheet):
     """
     for col, width in PTAI_COLUMN_WIDTHS.items():
         worksheet.column_dimensions[col].width = width
+
+
+def collect_history_rows(trivy_data):
+    """
+    Собирает строки истории удаленных уязвимостей и пакетов
+    из блока _diff_metadata.history.
+
+    Возвращает список записей, отсортированный по дате удаления (сначала свежие).
+    Отсутствующие даты показываются как "н/д": в diff-отчетах самых старых
+    версий даты сравнения не сохранялись.
+    """
+    metadata = trivy_data.get('_diff_metadata') or {}
+    history = metadata.get('history') or {}
+
+    missing = "н/д"
+    rows = []
+
+    for entry in (history.get('vulnerabilities') or {}).values():
+        rows.append({
+            'type': 'Уязвимость',
+            'vulnerability_id': entry.get('vulnerability_id') or missing,
+            'package': entry.get('pkg_name') or missing,
+            'version': entry.get('installed_version') or missing,
+            'severity': entry.get('severity') or '',
+            'target': entry.get('target') or missing,
+            'first_seen': entry.get('first_seen') or missing,
+            'last_removed_at': entry.get('last_removed_at') or missing,
+            'removed_count': entry.get('removed_count', 0)
+        })
+
+    for entry in (history.get('packages') or {}).values():
+        rows.append({
+            'type': 'Пакет',
+            'vulnerability_id': '',
+            'package': entry.get('pkg_name') or missing,
+            'version': entry.get('version') or missing,
+            'severity': '',
+            'target': entry.get('path') or missing,
+            'first_seen': entry.get('first_seen') or missing,
+            'last_removed_at': entry.get('last_removed_at') or missing,
+            'removed_count': entry.get('removed_count', 0)
+        })
+
+    rows.sort(key=lambda r: r['last_removed_at'] or '', reverse=True)
+
+    return rows
+
+
+def add_sca_history_sheet(workbook, enriched_trivy_path, sheet_name="SCA HISTORY"):
+    """
+    Добавляет справочный лист с историей удаленных уязвимостей и пакетов.
+
+    Лист накопительный: показывает все удаления, зафиксированные
+    в предыдущих сравнениях и в текущем.
+    """
+    with open(enriched_trivy_path, 'r', encoding='utf-8-sig') as f:
+        trivy_data = json.load(f)
+
+    history_rows = collect_history_rows(trivy_data)
+
+    if not history_rows:
+        print("   ⚠️ История удалений пуста, лист SCA HISTORY не создается")
+        return False
+
+    ws = workbook.create_sheet(sheet_name)
+
+    artifact_name = get_artifact_name(Path(enriched_trivy_path).name)
+    description = "📌 ИСТОРИЯ удаленных уязвимостей и пакетов (накопительно по всем сравнениям)"
+
+    add_info_block(ws, artifact_name, datetime.now(), description, 'history')
+
+    start_row = 5
+    for col_num, header in enumerate(SCA_HISTORY_COLUMN_HEADERS, 1):
+        cell = ws.cell(row=start_row, column=col_num, value=header)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell.border = CELL_BORDER
+
+    for row_num, entry in enumerate(history_rows, start_row + 1):
+        values = [
+            row_num - start_row,
+            entry['type'],
+            entry['vulnerability_id'],
+            entry['package'],
+            entry['version'],
+            entry['severity'],
+            entry['target'],
+            entry['first_seen'],
+            entry['last_removed_at'],
+            entry['removed_count']
+        ]
+
+        for col_num, value in enumerate(values, 1):
+            cell = ws.cell(row=row_num, column=col_num, value=value)
+            cell.border = CELL_BORDER
+            cell.font = NORMAL_FONT
+
+            if col_num in (1, 2, 5, 6, 8, 9, 10):
+                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            else:
+                cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+
+            if col_num == 6 and value:
+                apply_severity_style(cell, value)
+
+    for col, width in SCA_HISTORY_COLUMN_WIDTHS.items():
+        ws.column_dimensions[col].width = width
+
+    last_col = len(SCA_HISTORY_COLUMN_HEADERS)
+    ws.auto_filter.ref = f"A{start_row}:{get_column_letter(last_col)}{len(history_rows) + start_row}"
+    ws.freeze_panes = f'A{start_row + 1}'
+
+    return True
 
 
 def apply_change_status_style(cell, status):
