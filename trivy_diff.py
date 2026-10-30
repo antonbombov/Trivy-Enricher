@@ -3,7 +3,7 @@
 Trivy Diff Analyzer
 Поддерживает:
 - Docker-образы (идентификация по PkgName)
-- JAR-сканирования (идентификация по PkgName + UID)
+- JAR-сканирования (идентификация по PkgName + PkgPath)
 - Поиск пакетов по имени в секции Packages для определения UPDATED
 - Расчет остаточного срока устранения для уязвимостей со статусом UNCHANGED
 - Сравнение diff-отчета с обычным отчетом Trivy: diff-отчет определяется
@@ -45,6 +45,15 @@ class TrivyDiffAnalyzer:
         self.baseline_meta = self._extract_diff_metadata(self.report1_raw)
         self.baseline_history = self._extract_history(self.baseline_meta)
 
+        # История из отчетов прежних версий могла быть сохранена с ключами
+        # на UID пакета — пересобираем их по полям записей
+        self.baseline_history['vulnerabilities'] = self._normalize_history_keys(
+            self.baseline_history['vulnerabilities'], 'vulnerabilities'
+        )
+        self.baseline_history['packages'] = self._normalize_history_keys(
+            self.baseline_history['packages'], 'packages'
+        )
+
         if self.baseline_meta and not self._has_baseline_dates():
             print("⚠️ Baseline — diff-отчет старого формата: даты сравнения в нем не сохранены.")
             print("   Дата удаления будет взята из CreatedAt отчета, дата первого выявления — недоступна.")
@@ -68,10 +77,13 @@ class TrivyDiffAnalyzer:
         if self.baseline_meta:
             removed_pkgs = self.baseline_meta.get('removed_packages') or {}
             if isinstance(removed_pkgs, dict):
-                self.baseline_removed_packages = {
-                    key: dict(data) for key, data in removed_pkgs.items()
-                    if isinstance(data, dict)
-                }
+                self.baseline_removed_packages = self._normalize_history_keys(
+                    {
+                        key: dict(data) for key, data in removed_pkgs.items()
+                        if isinstance(data, dict)
+                    },
+                    'packages'
+                )
 
         # Парсим start_date (дата выявления)
         self.start_date = None
@@ -191,11 +203,10 @@ class TrivyDiffAnalyzer:
             for vuln in result.get('Vulnerabilities', []):
                 vuln_id = vuln.get('VulnerabilityID')
                 pkg_name = vuln.get('PkgName')
-                pkg_uid = vuln.get('PkgIdentifier', {}).get('UID', '')
                 if not vuln_id or not pkg_name:
                     continue
 
-                keys.add(self._build_vuln_key(vuln_id, pkg_name, pkg_uid))
+                keys.add(self._build_vuln_key(vuln_id, pkg_name, self._vuln_pkg_path(vuln)))
 
         return keys
 
@@ -220,11 +231,10 @@ class TrivyDiffAnalyzer:
             for vuln in result.get('Vulnerabilities', []):
                 vuln_id = vuln.get('VulnerabilityID')
                 pkg_name = vuln.get('PkgName')
-                pkg_uid = vuln.get('PkgIdentifier', {}).get('UID', '')
                 if not vuln_id or not pkg_name:
                     continue
 
-                vuln_key = self._build_vuln_key(vuln_id, pkg_name, pkg_uid)
+                vuln_key = self._build_vuln_key(vuln_id, pkg_name, self._vuln_pkg_path(vuln))
 
                 # Дата первого обнаружения: поле появилось в новой версии,
                 # для старых отчетов выводится из статуса и дат сравнения
@@ -454,23 +464,76 @@ class TrivyDiffAnalyzer:
 
         return False
 
-    def _build_pkg_key(self, pkg_name: str, pkg_uid: str = None) -> str:
+    def _vuln_pkg_path(self, vuln: Dict) -> Optional[str]:
+        """Путь пакета из записи уязвимости (для docker отсутствует)"""
+        return vuln.get('PkgPath') or vuln.get('FilePath') or None
+
+    def _pkg_dir(self, pkg_path: Optional[str]) -> str:
+        """Каталог пакета: путь без имени файла (версия меняет только имя файла)"""
+        if not pkg_path:
+            return ''
+
+        head, sep, _ = pkg_path.rpartition('/')
+        return head if sep else ''
+
+    def _build_pkg_key(self, pkg_name: str, pkg_path: str = None) -> Optional[str]:
+        """
+        Ключ пакета: имя + каталог размещения.
+
+        UID для сравнения отчетов не подходит: он хэшируется от всех полей
+        пакета, включая Licenses, поэтому любое изменение метаданных (другой
+        версией Trivy) дает новый UID при том же файле. Каталог различает
+        одинаковые библиотеки в разных war/jar, а версия остается вне ключа —
+        обновление пакета видно по сравнению версий, а не по смене ключа.
+        """
         if not pkg_name:
             return None
 
-        if self.report_type == 'jar' and pkg_uid:
-            return f"{pkg_name}-{pkg_uid}"
+        directory = self._pkg_dir(pkg_path)
+        if directory:
+            return f"{pkg_name}|{directory}"
 
         return pkg_name
 
-    def _build_vuln_key(self, vuln_id: str, pkg_name: str, pkg_uid: str = None) -> str:
+    def _build_vuln_key(self, vuln_id: str, pkg_name: str, pkg_path: str = None) -> Optional[str]:
         if not vuln_id or not pkg_name:
             return None
 
-        if self.report_type == 'jar' and pkg_uid:
-            return f"{vuln_id}-{pkg_name}-{pkg_uid}"
+        directory = self._pkg_dir(pkg_path)
+        if directory:
+            return f"{vuln_id}|{pkg_name}|{directory}"
 
-        return f"{vuln_id}-{pkg_name}"
+        return f"{vuln_id}|{pkg_name}"
+
+    def _normalize_history_keys(self, entries: Dict, kind: str) -> Dict:
+        """
+        Пересобирает ключи истории из полей записей.
+
+        В отчетах прежних версий ключи строились на UID пакета. Поля записи
+        (id уязвимости, имя пакета, путь) позволяют восстановить актуальный
+        ключ, поэтому накопленная история не теряется.
+        """
+        normalized = {}
+
+        for key, entry in entries.items():
+            if not isinstance(entry, dict):
+                continue
+
+            if kind == 'vulnerabilities':
+                new_key = self._build_vuln_key(
+                    entry.get('vulnerability_id'),
+                    entry.get('pkg_name'),
+                    entry.get('target')
+                )
+            else:
+                new_key = self._build_pkg_key(
+                    entry.get('pkg_name'),
+                    entry.get('path')
+                )
+
+            normalized[new_key or key] = entry
+
+        return normalized
 
     def _extract_from_vulns(self, report: Dict) -> Tuple[Dict, Dict]:
         """Извлекает пакеты и уязвимости из секции Vulnerabilities"""
@@ -485,14 +548,13 @@ class TrivyDiffAnalyzer:
                 vuln_id = vuln.get('VulnerabilityID')
                 pkg_name = vuln.get('PkgName')
                 pkg_version = vuln.get('InstalledVersion') or vuln.get('PkgVersion')
-                pkg_path = vuln.get('PkgPath') or vuln.get('FilePath')
-                pkg_uid = vuln.get('PkgIdentifier', {}).get('UID', '')
+                pkg_path = self._vuln_pkg_path(vuln)
 
                 if not vuln_id or not pkg_name:
                     continue
 
-                vuln_key = self._build_vuln_key(vuln_id, pkg_name, pkg_uid)
-                pkg_key = self._build_pkg_key(pkg_name, pkg_uid)
+                vuln_key = self._build_vuln_key(vuln_id, pkg_name, pkg_path)
+                pkg_key = self._build_pkg_key(pkg_name, pkg_path)
 
                 vulns[vuln_key] = vuln
 
@@ -500,8 +562,7 @@ class TrivyDiffAnalyzer:
                     packages[pkg_key] = {
                         'name': pkg_name,
                         'version': pkg_version,
-                        'path': pkg_path,
-                        'uid': pkg_uid
+                        'path': pkg_path
                     }
                 else:
                     if pkg_version and not packages[pkg_key]['version']:
@@ -510,7 +571,12 @@ class TrivyDiffAnalyzer:
         return packages, vulns
 
     def _extract_packages_by_name(self, report: Dict) -> Dict:
-        """Извлекает пакеты по имени из секции Packages (для поиска UPDATED)"""
+        """
+        Извлекает пакеты из секции Packages (для поиска UPDATED).
+
+        Ключ тот же, что и для уязвимостей: пакеты без уязвимостей иначе
+        не с чем сопоставить.
+        """
         packages = {}
 
         for result in report.get('Results', []):
@@ -521,22 +587,20 @@ class TrivyDiffAnalyzer:
                 pkg_name = pkg.get('Name')
                 pkg_version = pkg.get('Version')
                 pkg_path = pkg.get('FilePath')
-                pkg_uid = pkg.get('Identifier', {}).get('UID', '')
 
                 if not pkg_name:
                     continue
 
-                # Сохраняем по имени
-                if pkg_name not in packages:
-                    packages[pkg_name] = {
+                pkg_key = self._build_pkg_key(pkg_name, pkg_path)
+                if pkg_key not in packages:
+                    packages[pkg_key] = {
                         'name': pkg_name,
                         'version': pkg_version,
-                        'path': pkg_path,
-                        'uid': pkg_uid
+                        'path': pkg_path
                     }
                 else:
                     if pkg_version:
-                        packages[pkg_name]['version'] = pkg_version
+                        packages[pkg_key]['version'] = pkg_version
 
         return packages
 
@@ -560,14 +624,14 @@ class TrivyDiffAnalyzer:
             self.packages1 = vuln_packages1.copy()
             self.packages2 = vuln_packages2.copy()
 
-            # Добавляем пакеты по имени (если их нет в vuln_packages)
-            for name, data in self.packages_by_name1.items():
-                if name not in self.packages1:
-                    self.packages1[name] = data
+            # Добавляем пакеты из секции Packages (если их нет в vuln_packages)
+            for pkg_key, data in self.packages_by_name1.items():
+                if pkg_key not in self.packages1:
+                    self.packages1[pkg_key] = data
 
-            for name, data in self.packages_by_name2.items():
-                if name not in self.packages2:
-                    self.packages2[name] = data
+            for pkg_key, data in self.packages_by_name2.items():
+                if pkg_key not in self.packages2:
+                    self.packages2[pkg_key] = data
 
         if self.debug:
             print(f"📦 Packages in report1: {len(self.packages1)}")
@@ -583,31 +647,7 @@ class TrivyDiffAnalyzer:
             if pkg_key not in self.packages1:
                 self.package_changes[pkg_key] = ChangeType.NEW
             elif pkg_key not in self.packages2:
-                # Для JAR: проверяем, может пакет обновился (изменился UID)
-                if self.report_type == 'jar':
-                    pkg_name = self.packages1[pkg_key].get('name')
-                    if pkg_name and pkg_name in self.packages_by_name2:
-                        # Нашли пакет с таким же именем в report2
-                        v1 = self.packages1[pkg_key].get('version')
-                        v2 = self.packages_by_name2[pkg_name].get('version')
-
-                        if v1 != v2:
-                            # Версии разные -> это UPDATED
-                            self.package_changes[pkg_key] = ChangeType.UPDATED
-                            # Обновляем данные пакета
-                            self.packages2[pkg_key] = self.packages_by_name2[pkg_name]
-
-                            # Удаляем дубликат (пакет по имени, если он есть)
-                            if pkg_name in self.packages2 and pkg_name != pkg_key:
-                                del self.packages2[pkg_name]
-                            if pkg_name in self.package_changes:
-                                del self.package_changes[pkg_name]
-                        else:
-                            self.package_changes[pkg_key] = ChangeType.REMOVED
-                    else:
-                        self.package_changes[pkg_key] = ChangeType.REMOVED
-                else:
-                    self.package_changes[pkg_key] = ChangeType.REMOVED
+                self.package_changes[pkg_key] = ChangeType.REMOVED
             else:
                 v1 = self.packages1[pkg_key].get('version')
                 v2 = self.packages2[pkg_key].get('version')
@@ -616,26 +656,6 @@ class TrivyDiffAnalyzer:
                     self.package_changes[pkg_key] = ChangeType.UNCHANGED
                 else:
                     self.package_changes[pkg_key] = ChangeType.UPDATED
-
-        # Удаляем дубликаты (пакеты по имени, которые уже есть с UID)
-        if self.report_type == 'jar':
-            # Собираем ключи для удаления
-            keys_to_remove = []
-            for key in list(self.package_changes.keys()):
-                # Если ключ без UID (просто имя) и есть такой же с UID
-                if '-' not in key:  # это пакет по имени
-                    # Ищем пакет с таким же именем но с UID
-                    for other_key in self.package_changes.keys():
-                        if other_key != key and other_key.startswith(key + '-'):
-                            keys_to_remove.append(key)
-                            break
-
-            for key in keys_to_remove:
-                del self.package_changes[key]
-                if key in self.packages1:
-                    del self.packages1[key]
-                if key in self.packages2:
-                    del self.packages2[key]
 
         print("🔒 Comparing vulnerabilities...")
 
@@ -661,11 +681,11 @@ class TrivyDiffAnalyzer:
                 for vuln in result['Vulnerabilities']:
                     vuln_id = vuln.get('VulnerabilityID')
                     pkg_name = vuln.get('PkgName')
-                    pkg_uid = vuln.get('PkgIdentifier', {}).get('UID', '')
+                    pkg_path = self._vuln_pkg_path(vuln)
 
                     if vuln_id and pkg_name:
-                        vuln_key = self._build_vuln_key(vuln_id, pkg_name, pkg_uid)
-                        pkg_key = self._build_pkg_key(pkg_name, pkg_uid)
+                        vuln_key = self._build_vuln_key(vuln_id, pkg_name, pkg_path)
+                        pkg_key = self._build_pkg_key(pkg_name, pkg_path)
 
                         if vuln_key in self.vuln_changes:
                             change_type = self.vuln_changes[vuln_key]
@@ -735,9 +755,8 @@ class TrivyDiffAnalyzer:
                     vuln_data['_first_seen'] = first_seen.isoformat()
 
                 # Проверяем статус пакета
-                pkg_uid = vuln_data.get('PkgIdentifier', {}).get('UID', '')
                 pkg_name = vuln_data.get('PkgName')
-                pkg_key = self._build_pkg_key(pkg_name, pkg_uid)
+                pkg_key = self._build_pkg_key(pkg_name, self._vuln_pkg_path(vuln_data))
 
                 if pkg_key in self.package_changes:
                     vuln_data['_package_change_type'] = self.package_changes[pkg_key].value
@@ -863,8 +882,7 @@ class TrivyDiffAnalyzer:
             for vuln in result.get('Vulnerabilities', []):
                 vuln_id = vuln.get('VulnerabilityID')
                 pkg_name = vuln.get('PkgName')
-                pkg_uid = vuln.get('PkgIdentifier', {}).get('UID', '')
-                vuln_key = self._build_vuln_key(vuln_id, pkg_name, pkg_uid)
+                vuln_key = self._build_vuln_key(vuln_id, pkg_name, self._vuln_pkg_path(vuln))
                 if not vuln_key:
                     continue
 
