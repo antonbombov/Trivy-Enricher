@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from config_manager import load_config
-from trivy_parser import extract_cves_from_trivy
+from trivy_parser import extract_cves_from_trivy, is_removed_section
 from sploitscan_runner import find_existing_json
 from sploitscan_parser import parse_sploitscan_data
 from parallel_processor import process_single_cve, calculate_optimal_workers
@@ -160,6 +160,10 @@ def enrich_trivy_report(trivy_report_path, output_dir, only_cache=False):
         enriched_count = 0
         if 'Results' in trivy_data:
             for result in trivy_data['Results']:
+                # Секции удаленных уязвимостей и история не обогащаются:
+                # эти данные не используются при построении отчетов
+                if is_removed_section(result):
+                    continue
                 if 'Vulnerabilities' in result:
                     for vuln in result['Vulnerabilities']:
                         cve_id = vuln.get('VulnerabilityID')

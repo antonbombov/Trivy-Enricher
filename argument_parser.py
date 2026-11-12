@@ -6,6 +6,30 @@ from pathlib import Path
 from datetime import datetime
 
 
+# Буквы русской раскладки на тех же клавишах, что y и n
+_LAYOUT_MAP = {'н': 'y', 'т': 'n'}
+
+
+def ask_confirmation(prompt: str, default: bool = False) -> bool:
+    """
+    Запрашивает подтверждение, принимая во внимание раскладку клавиатуры.
+
+    Распознаются только y/н (да) и n/т (нет); пустой ввод дает default.
+    Любой другой ввод не прерывает работу — вопрос повторяется.
+    """
+    while True:
+        answer = ''.join(_LAYOUT_MAP.get(ch, ch) for ch in input(prompt).strip().lower())
+
+        if answer in ('y', 'yes'):
+            return True
+        if answer in ('n', 'no'):
+            return False
+        if not answer:
+            return default
+
+        print("   Введите y или n")
+
+
 def interactive_file_selection(scan_dir: Path, prompt: str, exclude: List[str] = None, start_dir: Path = None) -> Optional[str]:
     """
     Интерактивный выбор файла с возможностью навигации по каталогам
@@ -418,8 +442,7 @@ def get_diff_files(args, scan_dir: Path) -> Tuple[Optional[List[str]], bool, Opt
         else:
             print(f"  📅 Дата устранения: из ВТОРОГО отчета (CreatedAt)")
 
-        confirm = input("\nПродолжить? (y/N): ").strip().lower()
-        if confirm not in ['y', 'yes', 'д', 'да']:
+        if not ask_confirmation("\nПродолжить? (y/N): "):
             return None, True, None, None
 
         return [file1, file2], True, start_date, end_date
@@ -487,8 +510,7 @@ def get_diff_files(args, scan_dir: Path) -> Tuple[Optional[List[str]], bool, Opt
             else:
                 print(f"  📅 Дата устранения: из ВТОРОГО отчета (CreatedAt)")
 
-            confirm = input("\nПродолжить? (y/N): ").strip().lower()
-            if confirm not in ['y', 'yes', 'д', 'да']:
+            if not ask_confirmation("\nПродолжить? (y/N): "):
                 return None, True, None, None
 
             return args.diff[:2], True, start_date, end_date
