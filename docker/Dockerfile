@@ -16,9 +16,9 @@ RUN git clone https://github.com/antonbombov/Trivy-Enricher /app
 RUN pip install --no-cache-dir -r /sploitscan/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Создаем директории для монтирования
+# Точки монтирования (каталог результатов создается приложением)
 # Права 777, чтобы любой UID (в т.ч. --user) мог писать
-RUN mkdir -p /scan/input /scan/cache /scan/results && \
+RUN mkdir -p /scan/input /scan/cache && \
     chmod -R 777 /scan
 
 # Конфиг
@@ -26,7 +26,7 @@ RUN echo '{ \
   "sploitscan_path": "/sploitscan/sploitscan.py", \
   "scan_directory": "/scan/input/", \
   "cache_directory": "/scan/cache/", \
-  "output_directory": "/scan/results", \
+  "output_directory": "/scan/input/results", \
   "cache_max_days": 30, \
   "max_workers": null, \
   "timeout": 90, \
@@ -37,4 +37,4 @@ RUN echo '{ \
 ENTRYPOINT ["python", "-u", "main.py"]
 CMD []
 
-VOLUME ["/scan/input", "/scan/cache", "/scan/results"]
+VOLUME ["/scan/input", "/scan/cache"]

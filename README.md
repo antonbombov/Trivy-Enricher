@@ -25,14 +25,17 @@
 Перед запуском необходимо создать следующую структуру:  
 your_work_directory/  
 ├── config.json # Файл конфигурации (обязательно)  
-├── reports/ # Папка с входными отчетами (scan_directory)  
+├── Scan/ # Папка с входными отчетами (scan_directory)  
 │ ├── report1.json # JSON отчет Trivy  
 │ ├── report2.json  
-│ └── PTAI/ # Подпапка для PTAI отчетов  
-│ ├── report1.html # HTML отчет PTAI (имя совпадает с Trivy)  
-│ └── report2.html  
+│ ├── PTAI/ # Подпапка для PTAI отчетов  
+│ │ ├── report1.html # HTML отчет PTAI (имя совпадает с Trivy)  
+│ │ └── report2.html  
+│ └── results/ # Папка для выходных отчетов (output_directory)  
 ├── cache/ # Папка для кэша SploitScan  
-└── results/ # Папка для выходных отчетов  
+
+Каталог результатов вложен в каталог сканирования: все производные файлы
+(HTML, Excel, обогащенные JSON, логи) лежат рядом с исходными отчетами.  
 
 ## Требования к отчетам
 
@@ -65,7 +68,7 @@ pip install -r requirements.txt
   "sploitscan_path": "путь_к_sploitscan.py",
   "scan_directory": "путь_к_папке_с_отчетами",
   "cache_directory": "путь_к_папке_кэша",
-  "output_directory": "путь_к_папке_результатов",
+  "output_directory": "путь_к_папке_результатов (внутри scan_directory)",
   "cache_max_days": 30,
   "max_workers": null,
   "timeout": 60,
@@ -77,7 +80,7 @@ pip install -r requirements.txt
 ``sploitscan_path`` - 	Путь к SploitScan (файл .py или команда "sploitscan")
 ``scan_directory``	Папка с входными JSON отчетами Trivy
 ``cache_directory``	Папка для кэша результатов SploitScan
-``output_directory``	Папка для сохранения результатов (HTML, Excel)
+``output_directory``	Папка для сохранения результатов (HTML, Excel); рекомендуется держать внутри ``scan_directory``
 ``cache_max_days``	Максимальный возраст файлов в кэше (дни)
 ``max_workers``	Кол-во параллельных процессов (null = авто)
 ``timeout``	Таймаут на выполнение SploitScan (сек)
@@ -187,14 +190,15 @@ python trivy_diff.py old.json new.json [дата_выявления] [дата_�
 С сохранением кэша:
 
 ```powershell
-docker run --rm -it -v "${PWD}/Scan:/scan/input" -v "${PWD}/Reports:/scan/results" -v "${PWD}/Cache:/scan/cache" theunclefyodor/tve:latest -html -excel
+docker run --rm -it -v "${PWD}/Scan:/scan/input" -v "${PWD}/Cache:/scan/cache" theunclefyodor/tve:latest -html -excel
 ```
 Без сохранения кэша:
 ```
 powershell
-docker run --rm -it -v "${PWD}/Scan:/scan/input" -v "${PWD}/Reports:/scan/results" theunclefyodor/tve:latest -html -excel
+docker run --rm -it -v "${PWD}/Scan:/scan/input" theunclefyodor/tve:latest -html -excel
 ```
 <sub><sup>при использовании Docker контейнера отчет нужно положить в папку Scan.</sub></sup>
+<sub><sup>результаты сохраняются в Scan/results внутри смонтированного каталога — отдельный том не нужен</sub></sup>
 <sub><sup>при использовании контейнера с ключом --rm кэш результатов сканирования SploitScan сохраняться не будет</sub></sup>
 <sub><sup>в контейнере используется модифицированный sploitscan</sub></sup>
 
