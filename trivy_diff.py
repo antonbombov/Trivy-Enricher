@@ -133,6 +133,9 @@ class TrivyDiffAnalyzer:
         self.package_changes: Dict[str, ChangeType] = {}
         self.vuln_changes: Dict[str, ChangeType] = {}
 
+        # Пакеты, встречающиеся в секции Vulnerabilities хотя бы одного отчета
+        self.vuln_package_keys: Set[str] = set()
+
     def _load_report(self, path: str) -> Dict:
         try:
             with open(path, 'r', encoding='utf-8-sig') as f:
@@ -468,10 +471,25 @@ class TrivyDiffAnalyzer:
         """Путь пакета из записи уязвимости (для docker отсутствует)"""
         return vuln.get('PkgPath') or vuln.get('FilePath') or None
 
+    ARCHIVE_SUFFIXES = ('.jar', '.war', '.ear', '.zip')
+
     def _pkg_dir(self, pkg_path: Optional[str]) -> str:
-        """Каталог пакета: путь без имени файла (версия меняет только имя файла)"""
+        """
+        Каталог пакета: путь без имени файла, начиная с содержащего его архива.
+
+        Компоненты до архива зависят от каталога запуска Trivy
+        (opt/app/app.jar против app.jar), поэтому отбрасываются: иначе один и
+        тот же пакет из двух отчетов получает разные ключи и попадает в
+        статистику как новый и удаленный одновременно.
+        """
         if not pkg_path:
             return ''
+
+        parts = [part for part in pkg_path.replace('\\', '/').split('/') if part]
+
+        for index, part in enumerate(parts):
+            if part.lower().endswith(self.ARCHIVE_SUFFIXES):
+                return '/'.join(parts[index:-1])
 
         head, sep, _ = pkg_path.rpartition('/')
         return head if sep else ''
@@ -610,6 +628,8 @@ class TrivyDiffAnalyzer:
         # Извлекаем из секции Vulnerabilities
         vuln_packages1, self.vulns1 = self._extract_from_vulns(self.report1)
         vuln_packages2, self.vulns2 = self._extract_from_vulns(self.report2)
+
+        self.vuln_package_keys = set(vuln_packages1.keys()) | set(vuln_packages2.keys())
 
         # Извлекаем пакеты по имени из секции Packages (для JAR)
         self.packages_by_name1 = self._extract_packages_by_name(self.report1)
@@ -785,7 +805,7 @@ class TrivyDiffAnalyzer:
             diff_report['Results'].append(removed_result)
 
         diff_report['_diff_metadata'] = {
-            'packages': self._calculate_stats(self.package_changes),
+            'packages': self._calculate_vuln_package_stats(),
             'vulnerabilities': self._calculate_stats(self.vuln_changes),
             'report1': {
                 'path': str(self.report1_path),
@@ -929,6 +949,23 @@ class TrivyDiffAnalyzer:
         stats = {'new': 0, 'unchanged': 0, 'updated': 0, 'removed': 0}
         for change in changes.values():
             stats[change.value] += 1
+        return stats
+
+    def _calculate_vuln_package_stats(self) -> Dict:
+        """
+        Статистика пакетов для блока Comparison Summary.
+
+        Считаются только пакеты, по которым есть уязвимости: остальной
+        инвентарь (секция Packages) в отчете не отображается, поэтому его
+        статусы в сводке ничего не показывают.
+        """
+        stats = {'new': 0, 'unchanged': 0, 'updated': 0, 'removed': 0}
+
+        for pkg_key in self.vuln_package_keys:
+            change = self.package_changes.get(pkg_key)
+            if change:
+                stats[change.value] += 1
+
         return stats
 
     def print_summary(self):
