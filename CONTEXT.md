@@ -18,6 +18,8 @@
 
 Diff-анализ отчетов – сравнение двух отчетов Trivy (старого и нового) с классификацией изменений пакетов и уязвимостей (NEW/UNCHANGED/UPDATED/REMOVED), расчетом остаточного срока устранения для неизменных уязвимостей и сохранением результата в виде JSON-отчета, который затем может быть обработан как обычный отчет.
 
+Триаж уязвимостей (только в ветке `dev`, см. раздел 13) – локальный веб-сервер, который показывает diff-отчет таблицей 1:1 с листом «SCA Анализ» и позволяет пометить уязвимость как `mitigated` с обоснованием; правки пишутся прямо в diff JSON.
+
 Дедупликация в HTML – группировка одинаковых уязвимостей (CVE + пакет + версия) для компактного отображения, с сохранением всех путей вхождений.
 
 Логирование вызовов SploitScan – для каждой попытки сканирования CVE создается отдельный лог-файл в папке logs внутри выходной директории.
@@ -31,6 +33,8 @@ Diff-анализ отчетов – сравнение двух отчетов 
 - `-diff [REPORT1 REPORT2 [START_DATE [END_DATE]]]` – diff-анализ двух отчетов (0–4 позиционных аргумента, см. раздел про diff)
 - `-h` – показ справки
 - Без аргументов – показ справки (обязательно указание режима)
+
+В ветке `dev` дополнительно есть `-triage [DIFF_JSON]` (`nargs='?'`, `const=''`): открывает сервер триажа, совместим с `-html`/`-excel`/`-diff`, несовместим только с `-ptai-only`. В `main` этого ключа нет.
 
 ## 3. Архитектура проекта
 
@@ -165,7 +169,7 @@ Diff-анализ отчетов – сравнение двух отчетов 
 
 `generate_exploits_section(...)` – формирует блок с эксплойтами, если они есть.
 
-`generate_sidebar(...)` – создает левую панель с фильтрами и древовидной навигацией по секциям/пакетам.
+`generate_diff_stats(diff_metadata)` – блок «📊 Comparison Summary». Читает только `_diff_metadata['packages']` и `['vulnerabilities']` (`{new, unchanged, updated, removed}`) и рисует бейджи; ничего не пересчитывает и `history` не использует. Нулевые значения не отображаются. Вызывается из `generate_main_content` при `has_diff_data`.
 
 ### 4.10 html_templates.py
 Содержит три основные функции:
@@ -203,7 +207,21 @@ rejected = tbl.xpath(".//div[@class='vulnerability-statuses']//i[@title='Опр�
 - ID, файл, тип, CWE, комментарий
 
 ### 4.13 excel_reporter.py
-`generate_excel_report(enriched_trivy_path, output_dir, ptai_html_path=None)` – создает Excel с листами SCA Анализ и (опционально) PTAI Анализ.
+`generate_excel_report(enriched_trivy_path, output_dir, ptai_html_path=None, only_cache=False)` – создает Excel с листами SCA Анализ и (опционально) PTAI Анализ.
+
+`collect_all_vulnerabilities(trivy_data)` – строки для standard-режима (все уязвимости).
+
+`collect_all_vulnerabilities_with_diff(trivy_data, diff_mode)` – строки для diff-режимов: `'standard'` (без diff-данных), `'full'` (актуальные: new + unchanged), `'new'` (только new), `'removed'` (только removed). В строку попадают `source`, `path`, `package`, `version`, `vulnerability_id`, `severity`, `remediation_period`, `status`, `comment`, `vuln_change_type`, `package_change_type`, `version_change`, `remaining_days`, `has_exploits`. Путь очищается от корневого jar (`extract_root_jar`) и префикса `BOOT-INF/`.
+
+`group_vulnerabilities_by_artifact` – группировка для standard (склейка CVE в одну ячейку).
+
+`group_vulnerabilities_by_package_for_diff` – группировка для diff: каждая CVE отдельной строкой, объединение ячеек по группе (источник+путь+пакет+версия), срок устранения – минимальный по группе.
+
+`add_sca_sheet(workbook, enriched_trivy_path, sheet_name, diff_mode)` – лист SCA с режимами `standard`/`full`/`new`/`removed`; набор колонок зависит от режима.
+
+`add_sca_history_sheet(workbook, enriched_trivy_path)` – лист `SCA HISTORY` из `_diff_metadata.history` (см. `collect_history_rows`); не создается, если история пуста.
+
+`apply_change_status_style(cell, status)` – раскраска статуса по `CHANGE_STATUS_COLORS` (в `main` используется только для severity/статусов без `mitigated`; в ветке `dev` добавляет `mitigated`).
 
 ### 4.14 excel_styles.py
 Централизованное хранилище стилей: цвета, шрифты, границы, ширина колонок для обоих листов.
@@ -211,22 +229,39 @@ rejected = tbl.xpath(".//div[@class='vulnerability-statuses']//i[@title='Опр�
 ### 4.15 trivy_diff.py
 Класс `TrivyDiffAnalyzer(report1_path, report2_path, debug, start_date, end_date)` – сравнение двух отчетов Trivy.
 
-Определение типа отчета: при наличии у уязвимостей поля `PkgPath` (или `FilePath` у пакетов) отчет считается JAR-сканом, иначе – Docker.
+Определение типа отчета (`_detect_report_type`): при наличии у уязвимостей поля `PkgPath` (или `FilePath` у пакетов) отчет считается JAR-сканом, иначе – Docker.
 
-Ключи сопоставления:
-- Docker: пакет – по `PkgName`, уязвимость – по `VulnerabilityID + PkgName`.
-- JAR: пакет – по `PkgName + UID`, уязвимость – по `VulnerabilityID + PkgName + UID` (UID берется из `PkgIdentifier.UID` в секции Vulnerabilities и из `Identifier.UID` в секции Packages).
+Ключи сопоставления (`_build_pkg_key`, `_build_vuln_key`):
+- Пакет – `PkgName|каталог`, уязвимость – `VulnerabilityID|PkgName|каталог`. UID не используется: он хэшируется от всех полей пакета, включая Licenses, поэтому смена версии Trivy давала новые UID при том же файле.
+- `каталог` (`_pkg_dir`) – путь пакета без имени файла, **начиная с компонента-архива** (`.jar/.war/.ear/.zip`). Компоненты до архива отбрасываются, потому что они зависят от каталога запуска Trivy (`opt/app/app.jar/BOOT-INF/lib` против `app.jar/BOOT-INF/lib`). Без этой нормализации ключи двух отчетов не пересекались и весь инвентарь считался одновременно NEW и REMOVED.
+- Версия в ключ не входит – изменение версии видно как UPDATED, а не NEW+REMOVED.
+- Для Docker путь отсутствует, поэтому ключ равен `PkgName` / `VulnerabilityID|PkgName`.
+- Ограничение: два разных корневых архива с одинаковым именем (`a/app.jar` и `b/app.jar`) дают один ключ.
 
 Статусы изменений (ChangeType):
 - `NEW` – объект появился только во втором (новом) отчете;
 - `UNCHANGED` – присутствует в обоих отчетах (для уязвимостей рассчитывается остаточный срок);
-- `UPDATED` – пакет есть в обоих отчетах, но версия изменилась. Для JAR дополнительно используется индекс пакетов по имени (из секции `Packages`): если ключ с UID не найден во втором отчете, но имя пакета там есть и версия отличается – это UPDATED;
+- `UPDATED` – пакет есть в обоих отчетах, но версия изменилась;
 - `REMOVED` – объект был в первом отчете и исчез во втором.
 
-Остаточный срок (`_remaining_days`) рассчитывается только для уязвимостей `UNCHANGED`:
-`due_date = дата_выявления + срок_устранения(severity, эксплойты)`; `remaining_days = due_date - дата_устранения`. Положительное значение – запас времени, отрицательное – просрочка. Даты берутся из аргументов start_date/end_date, иначе из `CreatedAt` первого/второго отчетов.
+Источники данных для пакетов (`analyze`):
+- `packages1/packages2` – весь инвентарь: пакеты из секции `Vulnerabilities` + пакеты из секции `Packages` (`_extract_packages_by_name`). Из него строится `package_changes`, который нужен для `_package_change_type` в строках уязвимостей и для `_package_version_change`.
+- `vuln_package_keys` – только пакеты, встречающиеся в `Vulnerabilities` хотя бы одного отчета.
+- `_diff_metadata['packages']` считается методом `_calculate_vuln_package_stats()` **по `vuln_package_keys`**, а не по всему инвентарю. Причина: HTML-отчет отображает только карточки уязвимостей, поэтому статусы 140+ пакетов без уязвимостей в блоке Comparison Summary были бессмысленны и расходились с листом Excel «SCA Анализ». Полная статистика по инвентарю осталась в консольной сводке `print_summary()`.
 
-`build_diff_report()` формирует отчет на основе копии второго отчета: каждой уязвимости добавляются поля `_change_type`, `_package_change_type`, при необходимости `_package_version_change` (старая/новая версия пакета) и `_remaining_days`. Удаленные уязвимости добавляются отдельной секцией Results (`Type: removed`). В корень отчета добавляется блок `_diff_metadata` (статистика по пакетам/уязвимостям, пути отчетов, даты CreatedAt и использованные start/end).
+Остаточный срок (`_remaining_days`) рассчитывается только для уязвимостей `UNCHANGED` (и для регрессов, вернувшихся из истории):
+`due_date = дата_выявления + срок_устранения(severity, эксплойты)`; `remaining_days = due_date - дата_устранения`. Положительное значение – запас времени, отрицательное – просрочка. Даты берутся из аргументов start_date/end_date, иначе из `CreatedAt` первого/второго отчетов. `_due_date` фиксируется и переносится из предыдущего анализа без пересчета (см. `_resolve_due_date`), `_first_seen` – через `_resolve_first_seen`.
+
+`build_diff_report()` формирует отчет на основе копии второго отчета: каждой уязвимости добавляются поля `_change_type`, `_vuln_key`, `_first_seen`, `_package_change_type`, при необходимости `_package_version_change` (старая/новая версия пакета), `_due_date` и `_remaining_days`. Удаленные уязвимости добавляются отдельной секцией Results (`Type: removed`, `Class: removed`). В корень отчета добавляется блок `_diff_metadata`.
+
+Состав `_diff_metadata`:
+- `packages`, `vulnerabilities` – словари вида `{new, unchanged, updated, removed}` (ключ `updated` есть всегда, даже если равен 0);
+- `report1`, `report2` – `path`, `timestamp`, `created_date`;
+- `history` – `{vulnerabilities, packages}` накопительная история удалений;
+- `removed_packages` – пакеты, удаленные в текущем сравнении;
+- `start_date`, `end_date` – ISO-дата или строка `from_report1_created_date` / `from_report2_created_date`.
+
+История (`history`) – не источник статусов. Записи содержат только: для уязвимостей `vulnerability_id`, `pkg_name`, `installed_version`, `severity`, `target`, `first_seen`, `last_removed_at`, `removed_count`; для пакетов `pkg_name`, `version`, `path`, `first_seen`, `last_removed_at`, `removed_count`. Никаких `_change_type`/`_package_change_type` там нет. Назначение: если уязвимость уже встречалась ранее, при возврате она получает `first_seen` от даты первого выявления (срок не сбрасывается). Ключи истории при загрузке пересобираются из полей записи (`_normalize_history_keys`), поэтому нормализация путей применяется и к истории старых отчетов; поля `target`/`path` при этом сохраняют исходный полный путь (используются только для отображения).
 
 `save_diff_report(output_dir)` сохраняет результат в `<имя_второго_отчета>_diff.json` (при конфликте имен добавляется timestamp).
 
@@ -248,6 +283,8 @@ rejected = tbl.xpath(".//div[@class='vulnerability-statuses']//i[@title='Опр�
 - Вывод итогов.
 
 Режим `-ptai-only` обрабатывается отдельно: для всех PTAI HTML отчетов создаются Excel отчеты без участия Trivy/SploitScan.
+
+Порядок этапов при `-diff -html -excel`: diff → (в `dev`: триаж) → обогащение → HTML/Excel. Diff-отчет попадает в общий цикл как обычный отчет, поэтому `-diff` без `-html`/`-excel` только создает JSON.
 
 ## 5. Конфигурация (config.json)
 Поля:
@@ -339,13 +376,9 @@ Tailwind JS скачивается один раз и сохраняется в 
 Если скачивание не удалось, используется CDN-ссылка как запасной вариант.
 
 ### 7.5 Расчет сроков устранения в Excel
-Используется dateutil.relativedelta для прибавления месяцев.
+Базовые сроки в месяцах (`get_remediation_period`, `get_remediation_days`): Critical – 6, High – 9, остальные – 12. Если есть публичные эксплойты, срок сокращается на 3 месяца (но не менее 1 месяца). В днях считается как `months * 30`.
 
-Базовые сроки: Critical – 6 мес, High – 9, остальные – 12.
-
-Если есть публичные эксплойты, срок сокращается на 3 месяца (но не менее 1 месяца).
-
-Дата отсчитывается от текущей даты на момент генерации отчета.
+Для обычных (не diff) отчетов дата отсчитывается от текущей даты на момент генерации отчета. Для diff-отчетов приоритет имеет `_remaining_days` из JSON (`format_remaining_days`: `N дн.` или `просрочка N дн.`); если его нет – показывается период. В группе diff-листа берется минимальный срок по всем CVE группы (`get_min_remediation_days_for_group`).
 
 ### 7.6 Фильтрация в HTML
 Реализована на чистом JavaScript без сторонних библиотек.
@@ -391,9 +424,15 @@ Tailwind JS скачивается один раз и сохраняется в 
 - PTAI лист в Excel создается при наличии соответствующего HTML отчета (как и в обычном режиме)
 
 ### 7.13 Ключи сопоставления в diff-анализе
-Для JAR-сканов расхождение ключа с UID не считается сразу удалением: для пакетов предусмотрен запасной поиск по имени (из секции Packages), который и определяет UPDATED при изменении версии. Для Docker-отчетов UID не участвует – пакеты сопоставляются строго по имени.
+Пакет – `PkgName|каталог`, уязвимость – `VulnerabilityID|PkgName|каталог`; каталог считается от первого компонента-архива в пути (`_pkg_dir`). Версия и UID в ключ не входят. Для Docker-отчетов путь отсутствует, пакеты сопоставляются по имени.
 
 Имя файла diff-отчета строится от имени ВТОРОГО (нового) отчета: `<new>_diff.json`; повторный запуск при существовании файла добавляет timestamp.
+
+### 7.13.1 Два охвата пакетов в diff
+- `package_changes` – по всему инвентарю (секция `Packages` + пакеты из `Vulnerabilities`); используется для `_package_change_type` в строках уязвимостей, `_package_version_change` и `removed_packages`.
+- `_diff_metadata['packages']` – только по пакетам, у которых есть уязвимости (`vuln_package_keys`). Именно эти цифры показывает HTML-блок «Comparison Summary» и с ними сходится лист Excel «SCA Анализ».
+
+Если пакет обновился и из-за этого потерял CVE, он будет `UPDATED` в `_diff_metadata['packages']` (он был уязвим в первом отчете), а его уязвимость – `REMOVED` в секции «Removed Vulnerabilities».
 
 ### 7.14 Даты в diff-анализе
 `start_date` (дата выявления) по умолчанию берется из `CreatedAt` первого отчета, `end_date` (дата устранения/контрольная) – из `CreatedAt` второго. Явные даты имеют формат ГГГГ-ММ-ДД; `-` в аргументах означает использование CreatedAt. Остаточный срок считается по правилу: `due_date = start_date + срок(severity, эксплойты)` (30 дней = месяц), `remaining = due_date - end_date`.
@@ -408,9 +447,15 @@ HTML-отчет: интерактивный документ с фильтрам
 
 Excel-отчет: таблица для дальнейшей обработки (например, в DefectDojo или ручного заполнения статусов).
 
-Diff-отчет (JSON): копия второго отчета с полями `_change_type`, `_package_change_type`, `_package_version_change`, `_remaining_days`, отдельной секцией удаленных уязвимостей и блоком `_diff_metadata`.
+Diff-отчет (JSON): копия второго отчета с полями `_change_type`, `_vuln_key`, `_first_seen`, `_package_change_type`, `_package_version_change`, `_due_date`, `_remaining_days`, отдельной секцией удаленных уязвимостей и блоком `_diff_metadata`.
 
 Логи SploitScan: отдельные файлы для каждого вызова.
+
+### 8.1 Листы Excel
+- Без diff-данных: `SCA Анализ` (standard, все уязвимости, группировка по источнику+пути+пакету+версии, CVE склеиваются в одну ячейку) и опционально `PTAI Анализ`.
+- С diff-данными: `SCA Анализ` (`diff_mode='full'`), `SCA NEW` (`'new'`), `SCA REMOVED` (`'removed'`), `SCA HISTORY` (накопительная история удалений из `_diff_metadata.history`; не создается, если история пуста), опционально `PTAI Анализ`.
+- Колонки: `SCA_COLUMN_HEADERS`, `SCA_DIFF_COLUMN_HEADERS`, `SCA_DIFF_SHORT_COLUMN_HEADERS` (для NEW/REMOVED), `SCA_HISTORY_COLUMN_HEADERS`, `PTAI_COLUMN_HEADERS` – все в начале `excel_reporter.py`.
+- Группировка для diff – `group_vulnerabilities_by_package_for_diff` (ключ: источник+путь+пакет+версия, каждая CVE отдельной строкой, объединение ячеек по группе, срок устранения берется минимальный по группе).
 
 ## 9. Зависимости
 Python 3.7+
@@ -432,3 +477,82 @@ SploitScan (внешний инструмент) – рекомендуется 
 Проект версионируется через поле project_version в конфиге, которое отображается в подвале HTML.
 
 Для корректной работы фильтрации в HTML необходимо, чтобы у каждой карточки были data-атрибуты с CVE, пакетом, приоритетом, severity, EPSS, CISA, наличием эксплойтов, статусом и признаком сканирования. Это автоматически формируется при генерации.
+
+## 11. Карта кода (для быстрой навигации)
+
+### 11.1 Где что искать
+
+| Задача | Файл / функция |
+| --- | --- |
+| Запуск, режимы, порядок этапов | `main.py` (`main`, `run_diff_mode`, `generate_ptai_only_reports_for_all`) |
+| Разбор CLI и валидация | `argument_parser.py` (`parse_arguments`, `get_report_types`, `get_diff_files`, `interactive_file_selection`) |
+| Ключи/статусы diff, статистика, история | `trivy_diff.py` (`analyze`, `build_diff_report`, `_pkg_dir`, `_build_pkg_key`, `_build_vuln_key`, `_calculate_vuln_package_stats`, `_build_history`, `_normalize_history_keys`) |
+| Блок «Comparison Summary» | `trivy_html_reporter.py` (`generate_diff_stats`, вызывается из `generate_main_content`) |
+| Бейджи/фильтры статусов в HTML | `trivy_html_reporter.py` (`generate_change_filter` ~стр. 840, `data-vuln-change-type`, `data-package-change-type`) |
+| Сбор строк для Excel и триажа | `excel_reporter.py` (`collect_all_vulnerabilities`, `collect_all_vulnerabilities_with_diff`, `group_vulnerabilities_by_package_for_diff`) |
+| Состав листов Excel | `excel_reporter.py` (`generate_excel_report`, `add_sca_sheet`, `add_sca_history_sheet`) |
+| Сроки устранения | `excel_reporter.py` (`get_remediation_period`, `format_remaining_days`, `get_min_remediation_days_for_group`) |
+| Цвета/стили | `excel_styles.py` (`SEVERITY_COLORS`, `CHANGE_STATUS_COLORS`, `apply_severity_style`) |
+| HTML-шаблон, CSS, JS фильтров | `html_templates.py` (`get_base_html`, `get_css_styles`, `get_javascript`) |
+| Обогащение SploitScan | `enrichment_core.py`, `parallel_processor.py`, `sploitscan_runner.py` |
+| Кэш | `cache_cleaner.py`, `cdn_cache_manager.py` |
+| PTAI | `ptai_processor.py` |
+
+### 11.2 Инварианты, которые нельзя ломать
+
+- HTML и Excel **не считают** diff-статистику: HTML рисует `_diff_metadata.packages/vulnerabilities`, Excel раскрашивает строки по `_change_type`/`_package_change_type`. Единственный источник статусов – `trivy_diff.py`.
+- `_diff_metadata.packages` – статистика только по пакетам с уязвимостями; полный инвентарь живет в `package_changes` и в консольной сводке.
+- История (`_diff_metadata.history`) – только справочник «встречалась ли ранее»; статусы в неё не пишутся и из неё не читаются.
+- Ключ пакета/уязвимости не должен содержать версию и UID, иначе обновление пакета превращается в NEW+REMOVED.
+- Путь в ключе нормализуется от первого компонента-архива; менять это можно только вместе с проверкой пересечения ключей двух реальных отчетов.
+- Удаленные уязвимости лежат отдельной секцией `Results` с `Type/Class = removed`; `_normalize_report` вырезает её при повторном использовании отчета как baseline, поэтому diff+diff не задваивает удаления.
+- Все чтения JSON – `encoding='utf-8-sig'` (Trivy пишет BOM).
+
+### 11.3 Правила работы в этом репозитории (требования пользователя)
+
+- Тесты и запуски проверок выполняет пользователь; без просьбы ничего не запускать. Автотестов в репозитории нет (`tests/` отсутствует, в `requirements.txt` только `openpyxl`, `requests`, `python-dateutil`, `lxml`).
+- Не трогать удаленный репозиторий (никаких `fetch --prune`, push только по прямой просьбе).
+- Не раздувать число команд и не вводить новых файлов состояния/сущностей.
+- Правки делать точечно в том модуле, который реально отвечает за поведение; не «улучшать» соседние модули без запроса.
+- Не пересказывать пользователю код, который только что написан, и не перепроверять его повторно без причины.
+
+### 11.4 Окружение и запуск
+
+- Консоль Windows использует cp1251 и ломает эмодзи в выводе: запускать с `PYTHONIOENCODING=utf-8`.
+- Рабочие каталоги: `Scan/` (входные отчеты), `Scan/results/` (результаты, `logs`), `cache/` (кэш SploitScan), `Scan/PTAI/` (PTAI HTML). `Scan/` в `.gitignore`.
+- Docker: `docker run --rm -it -v "%cd%\Scan:/scan/input" -v "%cd%\Cache:/scan/cache" theunclefyodor/tve:0.9.0.0 -diff old.json new.json`; внутри контейнера `output_directory: /scan/input/results`. На Windows `$(pwd)` не работает – использовать `%cd%`.
+- `generate_html_report_from_file.py` – вспомогательный скрипт: генерирует HTML из всех JSON в `Filtredreports/`, минуя обогащение.
+- `tmp.py` – черновик, в `.gitignore`, в сборке не участвует.
+
+### 11.5 Состояние веток
+
+- `main` (текущая рабочая) – стабильная линия: diff, HTML, Excel, PTAI, без триажа и без `mitigated`.
+- `dev` – ветка с триажем: `triage_server.py`, статус `mitigated`, `CHANGE_STATUS_COLORS`, `-triage` в CLI, изменения в `trivy_diff.py`/`excel_reporter.py`/`trivy_html_reporter.py`/`README.md`. В `main` этого кода нет; при переносе правок учитывать, что файлы там отличаются.
+
+## 12. Известные ограничения и старые баги
+
+- `has_diff_data` в `trivy_html_reporter.py` (`sum(v.values()) for v in diff_metadata.values()`) упадет с `TypeError`, если в `_diff_metadata` попадет значение-словарь без числовых значений (например, `report1` при определенном порядке проверки) – не исправлялось.
+- `_remaining_days` рассчитывается и хранится в diff JSON, но в HTML-карточке не выводится (в Excel выводится).
+- Два разных корневых архива с одинаковым именем дают один ключ пакета (следствие ключа без `Target`).
+- Старые diff-отчеты содержат статистику, посчитанную до исправления `_pkg_dir`, и требуют перегенерации.
+- В истории пакетов у записей, накопленных до исправления, `removed_count` может быть завышен (ложные удаления прошлых прогонов).
+
+## 12.1 Журнал исправлений diff (чтобы не переисследовать заново)
+
+**2026-11-17, коммит «Fix package diff keys and summary scope».** Два связанных дефекта, из-за которых HTML показывал `Packages: NEW 147, REMOVED 147` вместо фактических значений:
+
+1. `_pkg_dir()` возвращал путь без имени файла целиком, включая префикс до архива. В `old.json` путь был `opt/streamfns-svsch862db/streamfns-svsch862db.jar/BOOT-INF/lib/...`, в новом отчете – `streamfns-svsch862db.jar/BOOT-INF/lib/...`. Пересечение ключей – 0, поэтому все 147 пакетов попали и в NEW, и в REMOVED. Исправление: путь обрезается от первого компонента с расширением архива. Результат на реальных данных: 0 new, 0 removed, 2 updated (lz4-java 1.10.1→1.11.4, snappy-java 1.1.10.7→1.1.10.9), уязвимости – 0 new, 3 removed.
+2. `_diff_metadata['packages']` считался по всему инвентарю (секция `Packages`, 147 записей), а HTML отображает только карточки уязвимостей – сводка показывала 145 UNCHANGED, которых в отчете нет, и расходилась с Excel (4 пакета). Исправление: `_calculate_vuln_package_stats()` считает только по `vuln_package_keys`.
+
+Проверенный факт: `_diff_metadata.history` в этих цифрах не участвовала (в `old.json` история вообще пуста, в diff-отчете – 51 запись по уязвимостям и 14 по пакетам, и в HTML она не читается).
+
+## 13. Триаж уязвимостей (ветка `dev`)
+
+`triage_server.py` – `ThreadingHTTPServer` на `127.0.0.1:8765` (в Docker – `0.0.0.0`). Маршруты: `GET /`, `GET /tailwind.js`, `POST /api/save`.
+
+- Страница повторяет лист «SCA Анализ»: те же колонки (`SCA_DIFF_COLUMN_HEADERS`), данные из `collect_all_vulnerabilities_with_diff(report, 'full')` + `group_vulnerabilities_by_package_for_diff`, объединение ячеек по группе (источник+путь+пакет+версия), цвета из `SEVERITY_COLORS`/`CHANGE_STATUS_COLORS`.
+- Правка: чекбокс в колонке «Статус уязвимости» ставит `_change_type = 'mitigated'`, textarea пишет `_comment`. Снятие галочки восстанавливает исходный статус (по `_first_seen` и `_diff_metadata.report2.created_date`).
+- `mitigated` ≠ `removed`: срок устранения для него не считается, в Excel для него `remediation_display = 'не требуется'`.
+- `_update_vuln_stats` пересчитывает `_diff_metadata.vulnerabilities` (включая ключ `mitigated`), запись файла атомарная.
+- Запуск: `python main.py -html -excel -diff -triage` (diff → триаж → по Ctrl+C генерация отчетов) или отдельно `-triage [DIFF_JSON]`.
+- Приоритет низкий: пользователь считает триаж пока нецелесообразным; код сохранен, но не развивается.
